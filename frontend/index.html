@@ -65,7 +65,18 @@
             <line x1="12" y1="8" x2="12.01" y2="8" />
           </svg>
         </div>
-        <p>Masukkan email lalu klik Cek Inbox untuk melihat semua pesan masuk. Auto-refresh setiap 5 detik.</p>
+        <p>Masukkan email lalu klik Cek Inbox untuk melihat semua pesan masuk.</p>
+      </div>
+
+      <!-- Countdown Progress Bar (hidden until polling starts) -->
+      <div class="refresh-bar-wrap hidden" id="refresh-bar-wrap">
+        <div class="refresh-bar-label">
+          <span>Auto-refresh</span>
+          <span id="refresh-countdown">5s</span>
+        </div>
+        <div class="refresh-bar-track">
+          <div class="refresh-bar-fill" id="refresh-bar-fill"></div>
+        </div>
       </div>
     </section>
 
