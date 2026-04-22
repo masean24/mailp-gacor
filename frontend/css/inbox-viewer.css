@@ -349,3 +349,86 @@
 .hidden {
   display: none !important;
 }
+
+/* ── Email History Dropdown ── */
+.inbox-card__input-wrap {
+  position: relative;
+  margin-bottom: 1rem;
+}
+
+.history-dropdown {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 0;
+  right: 0;
+  background: var(--color-white);
+  border: var(--border-width) solid var(--color-black);
+  box-shadow: var(--shadow-offset) var(--shadow-offset) 0 var(--color-black);
+  z-index: 100;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.history-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.55rem 0.75rem;
+  cursor: pointer;
+  border-bottom: 1px solid var(--color-gray);
+  gap: 0.5rem;
+  transition: background 0.1s;
+}
+
+.history-item:last-child { border-bottom: none; }
+.history-item:hover { background: var(--color-yellow); }
+
+.history-item__email {
+  font-size: 0.875rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-item__remove {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 0.75rem;
+  color: var(--color-gray-dark);
+  flex-shrink: 0;
+  padding: 0.1rem 0.3rem;
+  line-height: 1;
+  transition: color 0.1s;
+}
+.history-item__remove:hover { color: var(--color-red); }
+
+/* ── OTP Chip Copied State ── */
+.otp-code-chip {
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.otp-code-chip:hover {
+  background: var(--color-green);
+  color: var(--color-black);
+}
+.otp-code-chip--copied {
+  background: var(--color-green) !important;
+  color: var(--color-black) !important;
+}
+
+/* ── Inbox Search Bar ── */
+.inbox-search-wrap {
+  margin-bottom: 1rem;
+}
+
+.inbox-search__input {
+  font-size: 0.875rem;
+  padding: 0.55rem 0.9rem;
+}
+
+.inbox-search__input::placeholder {
+  font-weight: 400;
+  opacity: 0.6;
+}

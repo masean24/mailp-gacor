@@ -34,13 +34,17 @@
         <h1 class="inbox-card__title">CEK INBOX</h1>
       </div>
       <label class="inbox-card__label" for="email-input">Masukkan Email</label>
-      <input
-        type="text"
-        id="email-input"
-        class="input inbox-card__input"
-        placeholder="email@example.com"
-        autocomplete="email"
-      >
+      <div class="inbox-card__input-wrap">
+        <input
+          type="text"
+          id="email-input"
+          class="input inbox-card__input"
+          placeholder="email@example.com"
+          autocomplete="off"
+          style="margin-bottom:0;"
+        >
+        <div class="history-dropdown hidden" id="history-dropdown"></div>
+      </div>
       <div class="inbox-card__actions">
         <button type="button" class="btn btn--green" id="btn-search">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -92,6 +96,9 @@
           <h2 class="inbox-result__title">INBOX</h2>
           <p class="inbox-result__email" id="result-email"></p>
         </div>
+      </div>
+      <div class="inbox-search-wrap">
+        <input type="text" id="inbox-search" class="input inbox-search__input" placeholder="🔍 Cari pengirim, subjek, atau isi email...">
       </div>
       <div class="inbox-result__loading hidden" id="result-loading">Memuat...</div>
       <ul class="inbox-result__list" id="result-list"></ul>

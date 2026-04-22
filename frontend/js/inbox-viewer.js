@@ -1,16 +1,14 @@
 /**
- * Inbox Viewer - Public page for checking email inbox
- * Features:
- *  - OTP auto-detect with highlighted code chip
- *  - Staggered entry animations on load
- *  - Visual countdown progress bar for auto-refresh
- *  - New email flash indicator on poll updates
+ * Inbox Viewer
+ * Features: history dropdown, copy OTP 1-click, search/filter, browser notifications
  */
 
 const API_BASE = '/api';
 const POLL_INTERVAL_MS = 5000;
+const HISTORY_KEY = 'hubify_history';
+const HISTORY_MAX = 10;
 
-const elements = {
+const el = {
   emailInput:       document.getElementById('email-input'),
   btnSearch:        document.getElementById('btn-search'),
   btnRefresh:       document.getElementById('btn-refresh'),
@@ -19,6 +17,8 @@ const elements = {
   resultLoading:    document.getElementById('result-loading'),
   resultList:       document.getElementById('result-list'),
   resultEmpty:      document.getElementById('result-empty'),
+  inboxSearch:      document.getElementById('inbox-search'),
+  historyDropdown:  document.getElementById('history-dropdown'),
   modal:            document.getElementById('email-modal'),
   modalClose:       document.getElementById('modal-close'),
   modalSubject:     document.getElementById('modal-subject'),
@@ -29,6 +29,7 @@ const elements = {
   refreshBarWrap:   document.getElementById('refresh-bar-wrap'),
   refreshBarFill:   document.getElementById('refresh-bar-fill'),
   refreshCountdown: document.getElementById('refresh-countdown'),
+  toastContainer:   document.getElementById('toast-container'),
 };
 
 let currentEmail   = null;
@@ -36,70 +37,136 @@ let pollInterval   = null;
 let countdownTimer = null;
 let countdownSec   = POLL_INTERVAL_MS / 1000;
 let knownEmailIds  = new Set();
+let lastEmails     = [];
+let searchQuery    = '';
+let searchTimeout  = null;
 
-// ── OTP Detection ────────────────────────────────────────────────────────────
-/**
- * Extract the first OTP-like code from text.
- * Matches 4–8 consecutive digits that appear isolated (not part of a longer number).
- */
-function extractOtp(text) {
-  if (!text) return null;
-  // Match 4–8 digit sequences, optionally separated by spaces/dashes (e.g. "123 456" or "12-34-56")
-  const match = text.match(/\b(\d[\d\s\-]{2,10}\d)\b/);
-  if (!match) return null;
-  const raw = match[1].replace(/[\s\-]/g, '');
-  if (raw.length >= 4 && raw.length <= 8) return raw;
-  return null;
+// ── Toast ─────────────────────────────────────────────────────────────────────
+function showToast(message, type = '') {
+  const toast = document.createElement('div');
+  toast.className = `toast${type ? ' toast--' + type : ''}`;
+  toast.textContent = message;
+  el.toastContainer.appendChild(toast);
+  setTimeout(() => toast.remove(), 3000);
 }
 
-function isOtpEmail(subject, preview) {
-  const keywords = /otp|kode|code|verif|token|pin|password sementara|one.time/i;
-  return keywords.test(subject) || keywords.test(preview) || extractOtp(subject) || extractOtp(preview);
+// ── History ───────────────────────────────────────────────────────────────────
+function loadHistory() {
+  try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'); }
+  catch { return []; }
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
-function showResult() {
-  elements.inboxResult.classList.remove('hidden');
+function saveHistory(email) {
+  let h = loadHistory().filter(x => x.email !== email);
+  h.unshift({ email, lastChecked: Date.now() });
+  if (h.length > HISTORY_MAX) h = h.slice(0, HISTORY_MAX);
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(h));
 }
 
-function setLoading(loading) {
-  if (loading) {
-    elements.resultLoading.classList.remove('hidden');
-    elements.resultList.innerHTML = '';
-    elements.resultList.style.display = 'none';
-    elements.resultEmpty.classList.add('hidden');
-  } else {
-    elements.resultLoading.classList.add('hidden');
-    elements.resultList.style.display = '';
-  }
+function removeHistoryItem(email) {
+  const h = loadHistory().filter(x => x.email !== email);
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(h));
+  renderHistoryDropdown();
 }
 
-function escapeHtml(text) {
-  if (!text) return '';
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
+function renderHistoryDropdown() {
+  const dropdown = el.historyDropdown;
+  if (!dropdown) return;
+  const query = el.emailInput.value.trim().toLowerCase();
+  const all = loadHistory();
+  const filtered = query ? all.filter(h => h.email.toLowerCase().includes(query)) : all;
+
+  if (!filtered.length) { dropdown.classList.add('hidden'); return; }
+
+  dropdown.innerHTML = filtered.map(h => `
+    <div class="history-item" data-email="${escapeHtml(h.email)}">
+      <span class="history-item__email">${escapeHtml(h.email)}</span>
+      <button class="history-item__remove" data-remove="${escapeHtml(h.email)}" title="Hapus dari riwayat">✕</button>
+    </div>`).join('');
+  dropdown.classList.remove('hidden');
 }
 
-function formatTime(dateString) {
-  const date = new Date(dateString);
-  const now   = new Date();
-  const diff  = now - date;
-  if (diff < 60000)    return 'Baru saja';
-  if (diff < 3600000)  return `${Math.floor(diff / 60000)} menit lalu`;
-  if (diff < 86400000) return `${Math.floor(diff / 3600000)} jam lalu`;
-  return date.toLocaleString('id-ID', {
-    day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit',
+function hideHistoryDropdown() {
+  setTimeout(() => el.historyDropdown?.classList.add('hidden'), 150);
+}
+
+// ── Notifications ─────────────────────────────────────────────────────────────
+async function requestNotifPermission() {
+  if (!('Notification' in window) || Notification.permission !== 'default') return;
+  showToast('🔔 Aktifkan notifikasi agar tahu kalau ada email baru masuk meskipun tab di-minimize');
+  await new Promise(r => setTimeout(r, 1800));
+  const result = await Notification.requestPermission();
+  if (result === 'granted') showToast('Notifikasi aktif ✓', 'success');
+}
+
+function sendNewEmailNotif(email) {
+  if (Notification.permission !== 'granted') return;
+  if (document.visibilityState === 'visible') return;
+  new Notification('📧 Email baru masuk!', {
+    body: `${email.from}: ${email.subject || '(no subject)'}`,
+    icon: '/favicon.ico',
+    tag: `inbox-${email.id}`,
   });
 }
 
-// ── Countdown Progress Bar ────────────────────────────────────────────────────
+// ── OTP Detection ─────────────────────────────────────────────────────────────
+function extractOtp(text) {
+  if (!text) return null;
+  const match = text.match(/\b(\d[\d\s\-]{2,10}\d)\b/);
+  if (!match) return null;
+  const raw = match[1].replace(/[\s\-]/g, '');
+  return (raw.length >= 4 && raw.length <= 8) ? raw : null;
+}
+
+function isOtpEmail(subject, preview) {
+  const kw = /otp|kode|code|verif|token|pin|password sementara|one.time/i;
+  return kw.test(subject) || kw.test(preview) || extractOtp(subject) || extractOtp(preview);
+}
+
+// ── Copy OTP ──────────────────────────────────────────────────────────────────
+async function copyOtp(text, chipEl) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const ta = Object.assign(document.createElement('textarea'), {
+      value: text, style: 'position:fixed;opacity:0'
+    });
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    ta.remove();
+  }
+  if (chipEl) {
+    const orig = chipEl.textContent;
+    chipEl.classList.add('otp-code-chip--copied');
+    chipEl.textContent = '✓ COPIED';
+    setTimeout(() => { chipEl.classList.remove('otp-code-chip--copied'); chipEl.textContent = orig; }, 2000);
+  }
+  showToast('OTP disalin! ✓', 'success');
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function escapeHtml(t) {
+  if (!t) return '';
+  const d = document.createElement('div');
+  d.textContent = t;
+  return d.innerHTML;
+}
+
+function formatTime(ds) {
+  const d = new Date(ds), diff = Date.now() - d;
+  if (diff < 60000)    return 'Baru saja';
+  if (diff < 3600000)  return `${Math.floor(diff / 60000)} menit lalu`;
+  if (diff < 86400000) return `${Math.floor(diff / 3600000)} jam lalu`;
+  return d.toLocaleString('id-ID', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+}
+
+// ── Countdown ─────────────────────────────────────────────────────────────────
 function startCountdown() {
   stopCountdown();
   countdownSec = POLL_INTERVAL_MS / 1000;
-  elements.refreshBarWrap.classList.remove('hidden');
+  el.refreshBarWrap.classList.remove('hidden');
   updateCountdownUI();
-
   countdownTimer = setInterval(() => {
     countdownSec = Math.max(0, countdownSec - 1);
     updateCountdownUI();
@@ -107,269 +174,201 @@ function startCountdown() {
   }, 1000);
 }
 
-function resetCountdown() {
-  countdownSec = POLL_INTERVAL_MS / 1000;
-  updateCountdownUI();
-}
-
-function stopCountdown() {
-  if (countdownTimer) {
-    clearInterval(countdownTimer);
-    countdownTimer = null;
-  }
-}
+function resetCountdown() { countdownSec = POLL_INTERVAL_MS / 1000; updateCountdownUI(); }
+function stopCountdown()  { if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; } }
 
 function updateCountdownUI() {
-  const total  = POLL_INTERVAL_MS / 1000;
-  const pct    = (countdownSec / total) * 100;
-  const fill   = elements.refreshBarFill;
-  const label  = elements.refreshCountdown;
-
-  fill.style.width = `${pct}%`;
-  label.textContent = `${countdownSec}s`;
-
-  fill.classList.remove('refresh-bar-fill--warning', 'refresh-bar-fill--urgent');
-  if (pct <= 30) {
-    fill.classList.add('refresh-bar-fill--urgent');
-  } else if (pct <= 60) {
-    fill.classList.add('refresh-bar-fill--warning');
-  }
+  const pct = (countdownSec / (POLL_INTERVAL_MS / 1000)) * 100;
+  el.refreshBarFill.style.width = `${pct}%`;
+  el.refreshCountdown.textContent = `${countdownSec}s`;
+  el.refreshBarFill.classList.remove('refresh-bar-fill--warning', 'refresh-bar-fill--urgent');
+  if (pct <= 30) el.refreshBarFill.classList.add('refresh-bar-fill--urgent');
+  else if (pct <= 60) el.refreshBarFill.classList.add('refresh-bar-fill--warning');
 }
 
-// ── Render Inbox Items ────────────────────────────────────────────────────────
-function buildItemHtml(item, isNew, suppressAnim) {
+// ── Render ────────────────────────────────────────────────────────────────────
+function buildItem(item, isNew, noAnim) {
   const subject = item.subject || '(No Subject)';
   const preview = item.preview || '';
-  const otp     = isOtpEmail(subject, preview) ? extractOtp(subject) || extractOtp(preview) : null;
-  const otpStr  = otp ? String(otp) : null;
-
-  const animClass  = suppressAnim ? 'no-anim' : '';
-  const otpClass   = otpStr ? 'inbox-item--otp' : '';
-  const newClass   = isNew ? 'inbox-item--new' : '';
-
-  const otpBadge   = otpStr
-    ? `<span class="otp-badge"><span class="otp-badge__dot"></span>OTP</span>`
-    : '';
-
-  const otpChip    = otpStr
-    ? `<div class="otp-code-chip">${escapeHtml(otpStr)}</div>`
-    : '';
-
+  const otpStr  = isOtpEmail(subject, preview) ? (extractOtp(subject) || extractOtp(preview)) : null;
+  const cls     = ['inbox-item', otpStr ? 'inbox-item--otp' : '', isNew ? 'inbox-item--new' : '', noAnim ? 'no-anim' : ''].join(' ');
+  const badge   = otpStr ? `<span class="otp-badge"><span class="otp-badge__dot"></span>OTP</span>` : '';
+  const chip    = otpStr ? `<div class="otp-code-chip" title="Klik untuk salin OTP">${escapeHtml(otpStr)}</div>` : '';
   return `
-    <li class="inbox-item ${otpClass} ${newClass} ${animClass}" data-id="${item.id}">
+    <li class="${cls}" data-id="${item.id}">
       <div class="inbox-item__header">
         <span class="inbox-item__from">${escapeHtml(item.from)}</span>
-        <div style="display:flex;align-items:center;gap:0.4rem;flex-shrink:0;">
-          ${otpBadge}
-          <span class="inbox-item__time">${formatTime(item.receivedAt)}</span>
-        </div>
+        <div style="display:flex;align-items:center;gap:0.4rem;flex-shrink:0;">${badge}<span class="inbox-item__time">${formatTime(item.receivedAt)}</span></div>
       </div>
       <div class="inbox-item__subject">${escapeHtml(subject)}</div>
       <div class="inbox-item__preview">${escapeHtml(preview)}</div>
-      ${otpChip}
-    </li>
-  `;
+      ${chip}
+    </li>`;
 }
 
-function renderEmails(emails, isPollingRefresh) {
-  elements.resultEmpty.classList.add('hidden');
-
-  // Determine new arrivals for polling refreshes
-  const newIds = isPollingRefresh
-    ? new Set(emails.map(e => e.id).filter(id => !knownEmailIds.has(id)))
-    : new Set();
-
+function renderEmails(emails, isRefresh) {
+  lastEmails = emails;
+  const newIds = isRefresh ? new Set(emails.map(e => e.id).filter(id => !knownEmailIds.has(id))) : new Set();
+  if (isRefresh) newIds.forEach(id => { const e = emails.find(x => x.id === id); if (e) sendNewEmailNotif(e); });
   knownEmailIds = new Set(emails.map(e => e.id));
 
-  elements.resultList.innerHTML = emails
-    .map(item => buildItemHtml(
-      item,
-      newIds.has(item.id),
-      isPollingRefresh && !newIds.has(item.id) // suppress anim for old items on refresh
-    ))
-    .join('');
+  const q = searchQuery.toLowerCase();
+  const filtered = q
+    ? emails.filter(e => (e.subject||'').toLowerCase().includes(q) || (e.from||'').toLowerCase().includes(q) || (e.preview||'').toLowerCase().includes(q))
+    : emails;
+
+  el.resultEmpty.classList.add('hidden');
+  if (!filtered.length) {
+    el.resultList.innerHTML = '';
+    el.resultEmpty.classList.remove('hidden');
+    el.resultEmpty.querySelector('p').textContent = q ? `Tidak ada email yang cocok dengan "${searchQuery}".` : 'Belum ada email masuk.';
+    return;
+  }
+  el.resultList.innerHTML = filtered.map(item => buildItem(item, newIds.has(item.id), isRefresh && !newIds.has(item.id))).join('');
 }
 
 // ── Fetch ─────────────────────────────────────────────────────────────────────
-async function fetchInbox(showLoadingState = true) {
-  const email = currentEmail;
-  if (!email) return;
-
-  const isPollingRefresh = !showLoadingState;
-
-  if (showLoadingState) {
-    showResult();
-    elements.resultEmail.textContent = email;
-    setLoading(true);
+async function fetchInbox(showLoad = true) {
+  if (!currentEmail) return;
+  if (showLoad) {
+    el.inboxResult.classList.remove('hidden');
+    el.resultEmail.textContent = currentEmail;
+    el.resultLoading.classList.remove('hidden');
+    el.resultList.innerHTML = '';
+    el.resultList.style.display = 'none';
+    el.resultEmpty.classList.add('hidden');
   }
-
   try {
-    const res  = await fetch(`${API_BASE}/inbox/${encodeURIComponent(email)}`);
+    const res  = await fetch(`${API_BASE}/inbox/${encodeURIComponent(currentEmail)}`);
     const data = await res.json();
-
     if (!data.success) {
-      elements.resultList.innerHTML = '';
-      elements.resultEmpty.classList.remove('hidden');
-      elements.resultEmpty.querySelector('p').textContent = data.error || 'Gagal memuat data.';
+      el.resultEmpty.classList.remove('hidden');
+      el.resultEmpty.querySelector('p').textContent = data.error || 'Gagal memuat data.';
       return;
     }
-
     const emails = data.data?.emails || [];
-
-    if (emails.length === 0) {
-      elements.resultList.innerHTML = '';
-      elements.resultEmpty.classList.remove('hidden');
-      elements.resultEmpty.querySelector('p').textContent = 'Belum ada email masuk.';
+    if (!emails.length) {
+      lastEmails = [];
+      el.resultList.innerHTML = '';
+      el.resultEmpty.classList.remove('hidden');
+      el.resultEmpty.querySelector('p').textContent = 'Belum ada email masuk.';
       return;
     }
-
-    renderEmails(emails, isPollingRefresh);
-  } catch (err) {
-    console.error(err);
-    elements.resultList.innerHTML = '';
-    elements.resultEmpty.classList.remove('hidden');
-    elements.resultEmpty.querySelector('p').textContent =
-      'Gagal memuat. Periksa koneksi atau coba lagi.';
+    renderEmails(emails, !showLoad);
+  } catch {
+    el.resultEmpty.classList.remove('hidden');
+    el.resultEmpty.querySelector('p').textContent = 'Gagal memuat. Periksa koneksi atau coba lagi.';
   } finally {
-    setLoading(false);
-    if (isPollingRefresh) resetCountdown();
+    el.resultLoading.classList.add('hidden');
+    el.resultList.style.display = '';
+    if (!showLoad) resetCountdown();
   }
 }
 
 // ── Polling ───────────────────────────────────────────────────────────────────
-function startPolling() {
-  stopPolling();
-  startCountdown();
-  pollInterval = setInterval(() => fetchInbox(false), POLL_INTERVAL_MS);
-}
-
-function stopPolling() {
-  if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
-  stopCountdown();
-}
+function startPolling() { stopPolling(); startCountdown(); pollInterval = setInterval(() => fetchInbox(false), POLL_INTERVAL_MS); }
+function stopPolling()  { if (pollInterval) { clearInterval(pollInterval); pollInterval = null; } stopCountdown(); }
 
 // ── Modal ─────────────────────────────────────────────────────────────────────
-async function fetchEmailDetail(emailId) {
+async function fetchEmailDetail(id) {
   try {
-    const res  = await fetch(`${API_BASE}/email/${emailId}`);
-    const data = await res.json();
+    const data = await fetch(`${API_BASE}/email/${id}`).then(r => r.json());
     if (data.success) showEmailModal(data.data);
-  } catch (error) {
-    console.error('Error fetching email:', error);
-  }
+  } catch(e) { console.error(e); }
 }
 
 function showEmailModal(email) {
-  elements.modalSubject.textContent = email.subject;
-  elements.modalFrom.textContent    = email.from;
-  elements.modalTo.textContent      = email.to;
-  elements.modalDate.textContent    = new Date(email.receivedAt).toLocaleString('id-ID');
-
-  elements.modalBody.innerHTML = '';
-
+  el.modalSubject.textContent = email.subject;
+  el.modalFrom.textContent    = email.from;
+  el.modalTo.textContent      = email.to;
+  el.modalDate.textContent    = new Date(email.receivedAt).toLocaleString('id-ID');
+  el.modalBody.innerHTML = '';
   if (email.bodyHtml) {
-    const iframe      = document.createElement('iframe');
-    iframe.className  = 'email-iframe';
-    iframe.sandbox    = 'allow-same-origin';
-    iframe.style.width  = '100%';
-    iframe.style.border = 'none';
-    iframe.style.minHeight = '300px';
-
-    elements.modalBody.appendChild(iframe);
-
+    const iframe = document.createElement('iframe');
+    Object.assign(iframe, { className: 'email-iframe', sandbox: 'allow-same-origin' });
+    Object.assign(iframe.style, { width: '100%', border: 'none', minHeight: '300px' });
+    el.modalBody.appendChild(iframe);
     const doc = iframe.contentDocument || iframe.contentWindow.document;
     doc.open();
-    doc.write(`<!DOCTYPE html><html><head>
-      <base target="_blank">
-      <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-               padding: 10px; margin: 0; font-size: 14px; line-height: 1.5; color: #333; background: #fff; }
-        img  { max-width: 100%; height: auto; }
-        a    { color: #0066cc; }
-      </style>
-    </head><body>${email.bodyHtml}</body></html>`);
+    doc.write(`<!DOCTYPE html><html><head><base target="_blank"><style>body{font-family:system-ui;padding:10px;margin:0;font-size:14px;line-height:1.5;color:#333;background:#fff}img{max-width:100%}a{color:#0066cc}</style></head><body>${email.bodyHtml}</body></html>`);
     doc.close();
-
-    iframe.onload = () => {
-      try {
-        const height = iframe.contentDocument.body.scrollHeight;
-        iframe.style.height = Math.min(height + 20, 500) + 'px';
-      } catch (e) {
-        iframe.style.height = '400px';
-      }
-    };
+    iframe.onload = () => { try { iframe.style.height = Math.min(iframe.contentDocument.body.scrollHeight + 20, 500) + 'px'; } catch { iframe.style.height = '400px'; } };
   } else if (email.bodyText) {
     const pre = document.createElement('pre');
-    pre.style.whiteSpace  = 'pre-wrap';
-    pre.style.wordWrap    = 'break-word';
-    pre.style.fontFamily  = 'inherit';
-    pre.style.margin      = '0';
-    pre.textContent       = email.bodyText;
-    elements.modalBody.appendChild(pre);
+    Object.assign(pre.style, { whiteSpace: 'pre-wrap', wordWrap: 'break-word', fontFamily: 'inherit', margin: '0' });
+    pre.textContent = email.bodyText;
+    el.modalBody.appendChild(pre);
   } else {
-    elements.modalBody.textContent = '(No content)';
+    el.modalBody.textContent = '(No content)';
   }
-
-  elements.modal.classList.remove('closing');
-  elements.modal.classList.add('active');
+  el.modal.classList.remove('closing');
+  el.modal.classList.add('active');
 }
 
 function hideEmailModal() {
-  elements.modal.classList.add('closing');
-  setTimeout(() => {
-    elements.modal.classList.remove('active', 'closing');
-  }, 200);
+  el.modal.classList.add('closing');
+  setTimeout(() => el.modal.classList.remove('active', 'closing'), 200);
 }
 
-// ── Search ────────────────────────────────────────────────────────────────────
-function searchInbox() {
-  const email = elements.emailInput.value.trim();
-  if (!email) { elements.emailInput.focus(); return; }
-  if (!email.includes('@')) {
-    alert('Masukkan alamat email yang valid.');
-    return;
-  }
+// ── Search Inbox ──────────────────────────────────────────────────────────────
+async function searchInbox() {
+  const email = el.emailInput.value.trim();
+  if (!email) { el.emailInput.focus(); return; }
+  if (!email.includes('@')) { alert('Masukkan alamat email yang valid.'); return; }
 
-  knownEmailIds  = new Set();
-  currentEmail   = email;
-  localStorage.setItem('hubify_email', email);
+  knownEmailIds = new Set();
+  currentEmail  = email;
+  searchQuery   = '';
+  if (el.inboxSearch) el.inboxSearch.value = '';
 
-  elements.btnRefresh.classList.remove('hidden');
+  saveHistory(email);
+  hideHistoryDropdown();
+
+  await requestNotifPermission();
+
+  el.btnRefresh.classList.remove('hidden');
   fetchInbox(true);
   startPolling();
 }
 
-// ── Event Listeners ───────────────────────────────────────────────────────────
-elements.btnSearch.addEventListener('click', searchInbox);
-elements.emailInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') searchInbox();
+// ── Events ────────────────────────────────────────────────────────────────────
+el.btnSearch.addEventListener('click', searchInbox);
+el.emailInput.addEventListener('keydown', e => { if (e.key === 'Enter') searchInbox(); });
+el.emailInput.addEventListener('focus', () => renderHistoryDropdown());
+el.emailInput.addEventListener('blur',  hideHistoryDropdown);
+el.emailInput.addEventListener('input', renderHistoryDropdown);
+
+el.historyDropdown?.addEventListener('click', e => {
+  const removeBtn = e.target.closest('[data-remove]');
+  if (removeBtn) { e.stopPropagation(); removeHistoryItem(removeBtn.dataset.remove); return; }
+  const item = e.target.closest('.history-item');
+  if (item) { el.emailInput.value = item.dataset.email; hideHistoryDropdown(); searchInbox(); }
 });
 
-elements.btnRefresh.addEventListener('click', () => {
-  if (currentEmail) {
-    knownEmailIds = new Set();
-    fetchInbox(true);
-    // restart countdown
-    stopCountdown();
-    startCountdown();
-  }
+el.btnRefresh.addEventListener('click', () => {
+  if (!currentEmail) return;
+  knownEmailIds = new Set();
+  fetchInbox(true);
+  stopCountdown();
+  startCountdown();
 });
 
-elements.resultList.addEventListener('click', (e) => {
+el.resultList.addEventListener('click', e => {
+  const chip = e.target.closest('.otp-code-chip');
+  if (chip) { e.stopPropagation(); copyOtp(chip.textContent.trim(), chip); return; }
   const item = e.target.closest('.inbox-item');
   if (item) fetchEmailDetail(item.dataset.id);
 });
 
-elements.modalClose.addEventListener('click', hideEmailModal);
-elements.modal.addEventListener('click', (e) => {
-  if (e.target === elements.modal) hideEmailModal();
-});
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') hideEmailModal();
+el.inboxSearch?.addEventListener('input', e => {
+  clearTimeout(searchTimeout);
+  searchTimeout = setTimeout(() => { searchQuery = e.target.value.trim(); renderEmails(lastEmails, false); }, 200);
 });
 
-// ── Prefill from localStorage ─────────────────────────────────────────────────
+el.modalClose.addEventListener('click', hideEmailModal);
+el.modal.addEventListener('click', e => { if (e.target === el.modal) hideEmailModal(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') hideEmailModal(); });
+
+// ── Init ──────────────────────────────────────────────────────────────────────
 const savedEmail = localStorage.getItem('hubify_email');
-if (savedEmail) {
-  elements.emailInput.value = savedEmail;
-}
+if (savedEmail) el.emailInput.value = savedEmail;
