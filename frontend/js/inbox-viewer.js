@@ -60,12 +60,12 @@ function saveHistory(email) {
   let h = loadHistory().filter(x => x.email !== email);
   h.unshift({ email, lastChecked: Date.now() });
   if (h.length > HISTORY_MAX) h = h.slice(0, HISTORY_MAX);
-  localStorage.setItem(HISTORY_KEY, JSON.stringify(h));
+  try { localStorage.setItem(HISTORY_KEY, JSON.stringify(h)); } catch (e) {}
 }
 
 function removeHistoryItem(email) {
   const h = loadHistory().filter(x => x.email !== email);
-  localStorage.setItem(HISTORY_KEY, JSON.stringify(h));
+  try { localStorage.setItem(HISTORY_KEY, JSON.stringify(h)); } catch (e) {}
   renderHistoryDropdown();
 }
 
@@ -92,21 +92,28 @@ function hideHistoryDropdown() {
 
 // ── Notifications ─────────────────────────────────────────────────────────────
 async function requestNotifPermission() {
-  if (!('Notification' in window) || Notification.permission !== 'default') return;
-  showToast('🔔 Aktifkan notifikasi agar tahu kalau ada email baru masuk meskipun tab di-minimize');
-  await new Promise(r => setTimeout(r, 1800));
-  const result = await Notification.requestPermission();
-  if (result === 'granted') showToast('Notifikasi aktif ✓', 'success');
+  try {
+    if (!('Notification' in window) || Notification.permission !== 'default') return;
+    showToast('🔔 Aktifkan notifikasi agar tahu kalau ada email baru masuk meskipun tab di-minimize');
+    // Langsung request tanpa delay — delay akan memutus user gesture context di mobile
+    const result = await Notification.requestPermission();
+    if (result === 'granted') showToast('Notifikasi aktif ✓', 'success');
+  } catch (e) {
+    // Silent fail: iOS Safari lama dan beberapa mobile browser tidak support
+    console.warn('Notifikasi tidak didukung di browser ini:', e);
+  }
 }
 
 function sendNewEmailNotif(email) {
-  if (Notification.permission !== 'granted') return;
-  if (document.visibilityState === 'visible') return;
-  new Notification('📧 Email baru masuk!', {
-    body: `${email.from}: ${email.subject || '(no subject)'}`,
-    icon: '/favicon.ico',
-    tag: `inbox-${email.id}`,
-  });
+  try {
+    if (!('Notification' in window) || Notification.permission !== 'granted') return;
+    if (document.visibilityState === 'visible') return;
+    new Notification('📧 Email baru masuk!', {
+      body: `${email.from}: ${email.subject || '(no subject)'}`,
+      icon: '/favicon.ico',
+      tag: `inbox-${email.id}`,
+    });
+  } catch (e) {}
 }
 
 // ── OTP Detection ─────────────────────────────────────────────────────────────
@@ -324,7 +331,8 @@ async function searchInbox() {
   saveHistory(email);
   hideHistoryDropdown();
 
-  await requestNotifPermission();
+  // Fire-and-forget: jangan await — biar tidak block fetchInbox di mobile
+  requestNotifPermission().catch(() => {});
 
   el.btnRefresh.classList.remove('hidden');
   fetchInbox(true);
@@ -370,5 +378,7 @@ el.modal.addEventListener('click', e => { if (e.target === el.modal) hideEmailMo
 document.addEventListener('keydown', e => { if (e.key === 'Escape') hideEmailModal(); });
 
 // ── Init ──────────────────────────────────────────────────────────────────────
-const savedEmail = localStorage.getItem('hubify_email');
-if (savedEmail) el.emailInput.value = savedEmail;
+try {
+  const savedEmail = localStorage.getItem('hubify_email');
+  if (savedEmail) el.emailInput.value = savedEmail;
+} catch (e) {}
