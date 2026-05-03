@@ -268,6 +268,34 @@
                         <label for="new-domain">Domain Name</label>
                         <input type="text" class="input" id="new-domain" placeholder="example.com" required>
                     </div>
+
+                    <!-- DNS Setup Guide -->
+                    <div style="background: #f9f9e8; border: 2px solid #000; border-radius: 4px; padding: 1rem; margin-bottom: 1rem; font-size: 0.82rem;">
+                        <div style="font-weight: 700; margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.4rem;">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+                            DNS Setup (di domain provider kamu)
+                        </div>
+                        <table style="width: 100%; border-collapse: collapse; font-family: monospace; font-size: 0.8rem;">
+                            <thead>
+                                <tr style="border-bottom: 1px solid #ccc;">
+                                    <th style="text-align:left; padding: 2px 6px;">Type</th>
+                                    <th style="text-align:left; padding: 2px 6px;">Name</th>
+                                    <th style="text-align:left; padding: 2px 6px;">Value</th>
+                                    <th style="text-align:left; padding: 2px 6px;">Prio</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td style="padding: 2px 6px;"><span style="background:#000;color:#fff;padding:1px 5px;border-radius:3px;font-size:0.75rem;">MX</span></td>
+                                    <td style="padding: 2px 6px;">@</td>
+                                    <td style="padding: 2px 6px; color: #1a6b1a; font-weight: 600;">mail.hubify.store</td>
+                                    <td style="padding: 2px 6px;">10</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                        <p style="margin: 0.5rem 0 0; opacity: 0.65; font-size: 0.75rem;">⏱ DNS propagasi biasanya 1–24 jam setelah di-set.</p>
+                    </div>
+
                     <button type="submit" class="btn btn--green" style="width: 100%;">Add Domain</button>
                 </form>
             </div>
