@@ -1,6 +1,6 @@
 # Hubify Mail — External API Documentation
 
-> **Base URL:** `https://mail.hubify.id/api/ext`  
+> **Base URL:** `https://mail.hubify.store/api/ext`  
 > **Auth:** Header `X-API-Key: YOUR_API_KEY`  
 > **Rate Limit:** 120 req/menit
 
@@ -33,6 +33,54 @@ GET /api/ext/domains
 
 ---
 
+## 1b. Tambah Domain Baru
+
+```
+POST /api/ext/domains
+Content-Type: application/json
+```
+
+Tambah domain baru ke sistem. Cocok buat automation / bot lain yang cuma perlu nambah domain (endpoint ini **add-only** — gak ada hapus/nonaktif lewat API demi keamanan). Kalau `POSTFIX_SYNC_ENABLED=true` di server, Postfix langsung di-sync & reload otomatis.
+
+**Body:**
+| Field | Type | Required | Keterangan |
+|-------|------|:--------:|------------|
+| `domain` | string | ✅ | Nama domain, contoh `newdomain.com` |
+
+**Contoh:**
+```bash
+curl -X POST -H "X-API-Key: YOUR_KEY" -H "Content-Type: application/json" \
+  -d '{"domain": "newdomain.com"}' \
+  https://mail.hubify.store/api/ext/domains
+```
+
+**Response (berhasil — `201`):**
+```json
+{
+  "success": true,
+  "data": {
+    "id": 4,
+    "domain": "newdomain.com",
+    "is_active": true,
+    "created_at": "2026-05-31T10:00:00.000Z"
+  }
+}
+```
+
+**Response (Postfix sync gagal — domain tetap tersimpan):**
+```json
+{
+  "success": true,
+  "data": { "id": 4, "domain": "newdomain.com", "is_active": true, "created_at": "..." },
+  "postfixSyncWarning": "Postfix config was not updated. Update virtual_mailbox_domains on the VPS manually."
+}
+```
+
+> ⚠️ Jangan lupa set **MX record** domain baru ke mail server (`mail.hubify.store`) supaya email bisa masuk.
+> Kalau domain sudah ada, response `409` dengan error `Domain already exists`.
+
+---
+
 ## 2. Buat Email Baru
 
 ```
@@ -50,21 +98,21 @@ Content-Type: application/json
 **Contoh — Full random:**
 ```bash
 curl -X POST -H "X-API-Key: YOUR_KEY" -H "Content-Type: application/json" \
-  https://mail.hubify.id/api/ext/inbox/create
+  https://mail.hubify.store/api/ext/inbox/create
 ```
 
 **Contoh — Domain spesifik:**
 ```bash
 curl -X POST -H "X-API-Key: YOUR_KEY" -H "Content-Type: application/json" \
   -d '{"domainId": 2}' \
-  https://mail.hubify.id/api/ext/inbox/create
+  https://mail.hubify.store/api/ext/inbox/create
 ```
 
 **Contoh — Custom email:**
 ```bash
 curl -X POST -H "X-API-Key: YOUR_KEY" -H "Content-Type: application/json" \
   -d '{"localPart": "john.doe", "domainId": 1}' \
-  https://mail.hubify.id/api/ext/inbox/create
+  https://mail.hubify.store/api/ext/inbox/create
 ```
 
 **Response:**
@@ -92,7 +140,7 @@ GET /api/ext/inbox/{email}
 **Contoh:**
 ```bash
 curl -H "X-API-Key: YOUR_KEY" \
-  https://mail.hubify.id/api/ext/inbox/sarahputri47@hubify.store
+  https://mail.hubify.store/api/ext/inbox/sarahputri47@hubify.store
 ```
 
 **Response:**
@@ -129,7 +177,7 @@ GET /api/ext/inbox/{email}/latest
 **Contoh:**
 ```bash
 curl -H "X-API-Key: YOUR_KEY" \
-  https://mail.hubify.id/api/ext/inbox/sarahputri47@hubify.store/latest
+  https://mail.hubify.store/api/ext/inbox/sarahputri47@hubify.store/latest
 ```
 
 **Response:**
@@ -163,7 +211,7 @@ Ini endpoint paling berguna — langsung extract kode OTP/verifikasi dari email 
 **Contoh:**
 ```bash
 curl -H "X-API-Key: YOUR_KEY" \
-  https://mail.hubify.id/api/ext/inbox/sarahputri47@hubify.store/otp
+  https://mail.hubify.store/api/ext/inbox/sarahputri47@hubify.store/otp
 ```
 
 **Response (OTP ditemukan):**
@@ -204,7 +252,7 @@ GET /api/ext/email/{id}
 **Contoh:**
 ```bash
 curl -H "X-API-Key: YOUR_KEY" \
-  https://mail.hubify.id/api/ext/email/123
+  https://mail.hubify.store/api/ext/email/123
 ```
 
 **Response:**
@@ -235,7 +283,7 @@ DELETE /api/ext/inbox/{email}
 **Contoh:**
 ```bash
 curl -X DELETE -H "X-API-Key: YOUR_KEY" \
-  https://mail.hubify.id/api/ext/inbox/sarahputri47@hubify.store
+  https://mail.hubify.store/api/ext/inbox/sarahputri47@hubify.store
 ```
 
 **Response:**
@@ -255,8 +303,10 @@ curl -X DELETE -H "X-API-Key: YOUR_KEY" \
 | `401` | API key salah / tidak ada |
 | `400` | Parameter salah (email format, domain inactive) |
 | `404` | Email / inbox tidak ditemukan |
+| `409` | Resource sudah ada (mis. domain duplikat saat add domain) |
 | `429` | Rate limit tercapai |
 | `500` | Server error |
+| `503` | API key belum dikonfigurasi di server |
 
 **Format error:**
 ```json
@@ -275,7 +325,7 @@ curl -X DELETE -H "X-API-Key: YOUR_KEY" \
 import requests
 import time
 
-API = "https://mail.hubify.id/api/ext"
+API = "https://mail.hubify.store/api/ext"
 HEADERS = {"X-API-Key": "YOUR_KEY"}
 
 # 1. Buat email
@@ -310,7 +360,7 @@ requests.delete(f"{API}/inbox/{email}", headers=HEADERS)
 
 ### Node.js
 ```javascript
-const API = "https://mail.hubify.id/api/ext";
+const API = "https://mail.hubify.store/api/ext";
 const headers = { "X-API-Key": "YOUR_KEY", "Content-Type": "application/json" };
 
 // 1. Buat email
@@ -366,6 +416,18 @@ Bot pribadi untuk kontrol email via Telegram.
 | `/inbox user@domain.com` | List email masuk |
 | `/otp user@domain.com` | Ambil OTP |
 | `/del user@domain.com` | Hapus inbox |
+
+### Kelola Domain (owner)
+Tambah domain baru cukup dari Telegram — tinggal set MX record-nya, isi domain via bot/panel, Postfix auto-sync (jika `POSTFIX_SYNC_ENABLED=true`).
+
+| Command | Fungsi |
+|---------|--------|
+| `/alldomains` | List semua domain + status (aktif/nonaktif) |
+| `/adddomain newdomain.com` | Tambah domain baru + sync Postfix |
+| `/toggledomain 2` | Aktif/nonaktifkan domain (pakai ID) |
+| `/deldomain 2` | Hapus domain (pakai ID) |
+
+> 💡 Setelah `/adddomain`, set MX record domain baru ke mail server kamu. Kalau `POSTFIX_SYNC_ENABLED` belum aktif, bot kasih tahu supaya update `virtual_mailbox_domains` manual di VPS.
 
 ### Auto-Notify
 Setiap ada email masuk ke sistem, bot otomatis kirim notif:

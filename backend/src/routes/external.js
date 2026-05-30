@@ -3,6 +3,7 @@ import domainService from '../services/domain.js';
 import inboxService from '../services/inbox.js';
 import namesService from '../services/names.js';
 import otpExtract from '../services/otpExtract.js';
+import postfixSync from '../services/postfixSync.js';
 import apiKeyAuth from '../middleware/apiKeyAuth.js';
 
 const router = Router();
@@ -21,6 +22,46 @@ router.get('/domains', async (req, res) => {
     } catch (error) {
         console.error('Ext API - Error fetching domains:', error);
         res.status(500).json({ success: false, error: 'Failed to fetch domains' });
+    }
+});
+
+/**
+ * POST /api/ext/domains
+ * Add a new domain (add-only; no delete/disable exposed externally).
+ * Body: { domain: string }
+ * Triggers Postfix sync when POSTFIX_SYNC_ENABLED=true.
+ */
+router.post('/domains', async (req, res) => {
+    try {
+        const domain = (req.body?.domain || '').trim().toLowerCase();
+
+        if (!domain) {
+            return res.status(400).json({ success: false, error: 'Domain is required' });
+        }
+
+        // Validate domain format (same rule as admin API)
+        if (!/^[a-zA-Z0-9][a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(domain)) {
+            return res.status(400).json({ success: false, error: 'Invalid domain format' });
+        }
+
+        // Check duplicate
+        const existing = await domainService.getDomainByName(domain);
+        if (existing) {
+            return res.status(409).json({ success: false, error: 'Domain already exists' });
+        }
+
+        const newDomain = await domainService.createDomain(domain);
+
+        const syncResult = await postfixSync.syncPostfix();
+        const payload = { success: true, data: newDomain };
+        if (!syncResult.success && !syncResult.skipped) {
+            payload.postfixSyncWarning = syncResult.error || 'Postfix config was not updated. Update virtual_mailbox_domains on the VPS manually.';
+        }
+
+        res.status(201).json(payload);
+    } catch (error) {
+        console.error('Ext API - Error creating domain:', error);
+        res.status(500).json({ success: false, error: 'Failed to create domain' });
     }
 });
 

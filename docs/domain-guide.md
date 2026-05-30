@@ -10,6 +10,14 @@ Panduan lengkap untuk menambah dan mengelola domain di Hubify Mail.
 3. Masukkan nama domain baru (contoh: `temp.hubify.store`)
 4. Klik **Add Domain**
 
+> 💡 **Alternatif via Telegram Bot:** kamu juga bisa kelola domain langsung dari bot tanpa buka panel.
+> - `/adddomain temp.hubify.store` — tambah domain baru
+> - `/alldomains` — lihat semua domain + ID + status
+> - `/toggledomain <id>` — aktif/nonaktifkan
+> - `/deldomain <id>` — hapus
+>
+> Sama seperti panel, bot juga otomatis sync Postfix kalau `POSTFIX_SYNC_ENABLED=true`.
+
 ### 2. Postfix: Langsung Aktif (pilih salah satu)
 
 #### Opsi A: Otomatis dari Web (disarankan)

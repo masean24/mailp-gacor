@@ -390,6 +390,29 @@ router.patch('/names/:id', async (req, res) => {
 });
 
 /**
+ * DELETE /api/admin/names/all
+ * Delete all names
+ * NOTE: must be declared BEFORE '/names/:id' so 'all' is not matched as an id.
+ */
+router.delete('/names/all', async (req, res) => {
+    try {
+        const result = await namesService.deleteAllNames();
+
+        res.json({
+            success: true,
+            message: `Deleted ${result.count} names`,
+            deletedCount: result.count,
+        });
+    } catch (error) {
+        console.error('Error deleting all names:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to delete names',
+        });
+    }
+});
+
+/**
  * DELETE /api/admin/names/:id
  * Delete name
  */
@@ -421,25 +444,8 @@ router.delete('/names/:id', async (req, res) => {
 
 /**
  * DELETE /api/admin/names/all
- * Delete all names
+ * (moved above /names/:id)
  */
-router.delete('/names/all', async (req, res) => {
-    try {
-        const result = await namesService.deleteAllNames();
-
-        res.json({
-            success: true,
-            message: `Deleted ${result.count} names`,
-            deletedCount: result.count,
-        });
-    } catch (error) {
-        console.error('Error deleting all names:', error);
-        res.status(500).json({
-            success: false,
-            error: 'Failed to delete names',
-        });
-    }
-});
 
 /**
  * POST /api/admin/names/bulk
