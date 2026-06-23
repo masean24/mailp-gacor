@@ -272,6 +272,11 @@ router.get('/inbox/:address/otp', async (req, res) => {
 router.get('/email/:id', async (req, res) => {
     try {
         const { id } = req.params;
+
+        if (!/^\d+$/.test(id)) {
+            return res.status(400).json({ success: false, error: 'Invalid email id' });
+        }
+
         const email = await inboxService.getEmailById(id);
 
         if (!email) {
