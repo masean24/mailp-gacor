@@ -197,7 +197,7 @@ function updateCountdownUI() {
 function buildItem(item, isNew, noAnim) {
   const subject = item.subject || '(No Subject)';
   const preview = item.preview || '';
-  const otpStr  = isOtpEmail(subject, preview) ? (extractOtp(subject) || extractOtp(preview)) : null;
+  const otpStr  = item.otp || (isOtpEmail(subject, preview) ? (extractOtp(subject) || extractOtp(preview)) : null);
   const cls     = ['inbox-item', otpStr ? 'inbox-item--otp' : '', isNew ? 'inbox-item--new' : '', noAnim ? 'no-anim' : ''].join(' ');
   const badge   = otpStr ? `<span class="otp-badge"><span class="otp-badge__dot"></span>OTP</span>` : '';
   const chip    = otpStr ? `<div class="otp-code-chip" title="Klik untuk salin OTP">${escapeHtml(otpStr)}</div>` : '';
@@ -221,7 +221,7 @@ function renderEmails(emails, isRefresh) {
 
   const q = searchQuery.toLowerCase();
   const filtered = q
-    ? emails.filter(e => (e.subject||'').toLowerCase().includes(q) || (e.from||'').toLowerCase().includes(q) || (e.preview||'').toLowerCase().includes(q))
+    ? emails.filter(e => (e.subject||'').toLowerCase().includes(q) || (e.from||'').toLowerCase().includes(q) || (e.preview||'').toLowerCase().includes(q) || (e.otp||'').toLowerCase().includes(q))
     : emails;
 
   el.resultEmpty.classList.add('hidden');

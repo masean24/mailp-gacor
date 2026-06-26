@@ -229,14 +229,18 @@ router.get('/inbox/:address', async (req, res) => {
             success: true,
             data: {
                 email: address,
-                emails: emails.map((e) => ({
-                    id: e.id,
-                    from: e.from_address,
-                    subject: e.subject,
-                    preview: e.body_text?.substring(0, 100) || '',
-                    hasAttachment: e.has_attachment,
-                    receivedAt: e.received_at,
-                })),
+                emails: emails.map((e) => {
+                    const otp = otpExtract.extractOtp(e.body_text, e.body_html, e.subject);
+                    return {
+                        id: e.id,
+                        from: e.from_address,
+                        subject: e.subject,
+                        preview: e.body_text?.substring(0, 100) || '',
+                        otp: otp || null,
+                        hasAttachment: e.has_attachment,
+                        receivedAt: e.received_at,
+                    };
+                }),
                 expiresAt: inbox.expires_at,
             },
         });
