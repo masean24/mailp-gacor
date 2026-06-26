@@ -10,6 +10,33 @@ Complete guide for deploying Hubify Mail on Ubuntu VPS.
 
 ---
 
+## Quick Install (Recommended)
+
+For a fresh VPS, use the interactive installer:
+
+```bash
+sudo apt update
+sudo apt install -y git
+git clone https://github.com/masean24/hubify-mail.git /var/www/hubify-mail
+cd /var/www/hubify-mail
+sudo bash scripts/setup-vps.sh
+```
+
+The installer asks for the web/mail host domain, email domains, database password, JWT secret, external API key, admin login, optional Telegram config, and optional HTTPS setup.
+
+After install, point DNS to the VPS:
+
+| Type | Name | Value | Priority | Proxy |
+|------|------|-------|----------|-------|
+| A | mail | YOUR_VPS_IP | - | OFF |
+| MX | @ | mail.hubify.store | 10 | - |
+
+If using Cloudflare, keep the mail host DNS record DNS-only / proxy OFF. SMTP on port 25 will not work through the orange-cloud proxy.
+
+Manual setup is still documented below.
+
+---
+
 ## Step 1: Update System
 ```bash
 sudo apt update && sudo apt upgrade -y
@@ -74,6 +101,8 @@ NODE_ENV=production
 JWT_SECRET=your_super_secret_jwt_key_change_this
 RATE_LIMIT_WINDOW_MS=60000
 RATE_LIMIT_MAX_REQUESTS=60
+API_KEY=your_secret_api_key_here
+API_RATE_LIMIT_MAX=120
 EOF
 
 # Set permission for Postfix
