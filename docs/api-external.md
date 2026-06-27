@@ -2,12 +2,29 @@
 
 > **Base URL:** `https://mail.hubify.store/api/ext`  
 > **Auth:** Header `X-API-Key: YOUR_API_KEY`  
-> **Rate Limit:** 120 req/menit
+> **Rate Limit:** 5000 req/menit (per API key, configurable)
 
 Semua response pakai format:
 ```json
 { "success": true, "data": { ... } }
 ```
+
+---
+
+## High-Concurrency / Bulk Usage
+
+Buat workload bulk (mis. ambil OTP dari ratusan akun paralel), perhatikan ini:
+
+**Rekomendasi polling:**
+- Polling tiap **5 detik**, timeout **max 60 detik** per akun.
+- Pakai endpoint ringan `GET /api/ext/inbox/{email}/otp/latest` untuk loop polling — query 1 baris terindeks, tanpa parse body. Hindari spam `GET /api/ext/inbox/{email}` (list) buat polling.
+- Hapus inbox (`DELETE`) setelah OTP didapat untuk menjaga database tetap ramping.
+
+**Rate limit:**
+- Endpoint `/api/ext/*` pakai limit per-API-key (`API_RATE_LIMIT_MAX`, default 5000 req/menit), **terpisah** dari limit IP publik. Naikkan `API_RATE_LIMIT_MAX` di server kalau perlu lebih.
+- Hitung kebutuhan: 400 akun polling tiap 5 detik ≈ 4800 req/menit. Default 5000 sudah cukup untuk itu; naikkan kalau lebih banyak. Jangan poll lebih agresif dari perlu.
+
+**Server tuning (untuk admin server):** lihat `docs/vps-setup.md` bagian "High-Concurrency Settings" (`PG_POOL_MAX`, `PM2_INSTANCES`, `MAX_EMAIL_BYTES`).
 
 ---
 
@@ -243,6 +260,46 @@ curl -H "X-API-Key: YOUR_KEY" \
 
 ---
 
+## 5b. Ambil OTP Terbaru (Polling-friendly) ⚡
+
+```
+GET /api/ext/inbox/{email}/otp/latest
+```
+
+Versi ringan dari endpoint OTP, **dioptimalkan untuk polling skala besar** (ratusan akun paralel). OTP di-extract sekali waktu email masuk dan disimpan di database, jadi endpoint ini cuma query 1 baris terindeks — **tidak parse body email sama sekali**. Pakai ini untuk loop polling, bukan endpoint list.
+
+**Contoh:**
+```bash
+curl -H "X-API-Key: YOUR_KEY" \
+  https://mail.hubify.store/api/ext/inbox/sarahputri47@hubify.store/otp/latest
+```
+
+**Response (ada OTP):**
+```json
+{
+  "success": true,
+  "data": {
+    "email": "sarahputri47@hubify.store",
+    "otp": "847291",
+    "from": "noreply@google.com",
+    "subject": "Your verification code",
+    "receivedAt": "2026-02-19T08:30:00.000Z"
+  }
+}
+```
+
+**Response (belum ada OTP):**
+```json
+{
+  "success": true,
+  "data": null
+}
+```
+
+> Catatan: email lama yang masuk **sebelum** fitur ini aktif belum punya `otp_code` tersimpan, jadi tidak muncul di `/otp/latest`. Untuk data lama gunakan `/otp` (yang punya fallback parse). Email baru langsung ke-cover.
+
+---
+
 ## 6. Detail Email
 
 ```
@@ -340,9 +397,9 @@ print(f"📧 Email: {email}")
 otp = None
 for i in range(12):
     time.sleep(5)
-    r = requests.get(f"{API}/inbox/{email}/otp", headers=HEADERS)
+    r = requests.get(f"{API}/inbox/{email}/otp/latest", headers=HEADERS)
     data = r.json()["data"]
-    if data["otp"]:
+    if data and data["otp"]:
         otp = data["otp"]
         print(f"🔑 OTP: {otp} (dari {data['from']})")
         break
@@ -376,9 +433,9 @@ let otp = null;
 
 for (let i = 0; i < 12; i++) {
   await sleep(5000);
-  const r = await fetch(`${API}/inbox/${email}/otp`, { headers });
+  const r = await fetch(`${API}/inbox/${email}/otp/latest`, { headers });
   const data = (await r.json()).data;
-  if (data.otp) {
+  if (data && data.otp) {
     otp = data.otp;
     console.log(`🔑 OTP: ${otp} (dari ${data.from})`);
     break;

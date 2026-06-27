@@ -10,8 +10,18 @@ dotenv.config({ path: join(__dirname, '../../.env') });
 
 const { Pool } = pg;
 
+// Pool tuning via env for high-concurrency workloads.
+// Defaults are conservative; raise PG_POOL_MAX for hundreds of concurrent
+// polling clients (also size PostgreSQL max_connections accordingly).
+const poolMax = parseInt(process.env.PG_POOL_MAX, 10) || 20;
+const idleTimeoutMs = parseInt(process.env.PG_IDLE_TIMEOUT_MS, 10) || 30000;
+const connectionTimeoutMs = parseInt(process.env.PG_CONNECTION_TIMEOUT_MS, 10) || 10000;
+
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
+  max: poolMax,
+  idleTimeoutMillis: idleTimeoutMs,
+  connectionTimeoutMillis: connectionTimeoutMs,
 });
 
 // Test connection

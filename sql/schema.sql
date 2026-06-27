@@ -43,6 +43,7 @@ CREATE TABLE emails (
   subject TEXT,
   body_text TEXT,
   body_html TEXT,
+  otp_code VARCHAR(16),
   has_attachment BOOLEAN DEFAULT false,
   received_at TIMESTAMP DEFAULT NOW()
 );
@@ -60,14 +61,10 @@ CREATE INDEX idx_inboxes_expires ON inboxes(expires_at);
 CREATE INDEX idx_inboxes_local_domain ON inboxes(local_part, domain_id);
 CREATE INDEX idx_emails_inbox ON emails(inbox_id);
 CREATE INDEX idx_emails_received ON emails(received_at);
+CREATE INDEX idx_emails_inbox_received ON emails(inbox_id, received_at DESC);
+CREATE INDEX idx_emails_inbox_otp ON emails(inbox_id, received_at DESC) WHERE otp_code IS NOT NULL;
 CREATE INDEX idx_domains_active ON domains(is_active);
 CREATE INDEX idx_names_active ON names(is_active);
-
--- Insert sample domains (modify as needed)
-INSERT INTO domains (domain) VALUES 
-  ('hubify.store'),
-  ('mail.hubify.store'),
-  ('temp.hubify.store');
 
 -- Insert sample names (Indonesian names)
 INSERT INTO names (name, gender) VALUES 

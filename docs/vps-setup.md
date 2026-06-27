@@ -17,7 +17,7 @@ For a fresh VPS, use the interactive installer:
 ```bash
 sudo apt update
 sudo apt install -y git
-git clone https://github.com/masean24/hubify-mail.git /var/www/hubify-mail
+git clone https://github.com/masean24/mailp-gacor.git /var/www/hubify-mail
 cd /var/www/hubify-mail
 sudo bash scripts/setup-vps.sh
 ```
@@ -80,12 +80,16 @@ GRANT ALL ON SCHEMA public TO hubify;
 ## Step 4: Clone & Setup Project
 ```bash
 cd /var/www
-sudo git clone https://github.com/masean24/hubify-mail.git
+sudo git clone https://github.com/masean24/mailp-gacor.git hubify-mail
 sudo chown -R $USER:$USER hubify-mail
 cd hubify-mail
 
 # Setup database schema
 psql -U hubify -d hubify_mail -f sql/schema.sql
+
+# Fresh installs already include otp_code + indexes. If you are upgrading an
+# EXISTING database, run the migration instead (safe, no data loss):
+# psql -U hubify -d hubify_mail -f sql/migrations/001_high_concurrency.sql
 ```
 
 ## Step 5: Setup Backend
@@ -102,7 +106,14 @@ JWT_SECRET=your_super_secret_jwt_key_change_this
 RATE_LIMIT_WINDOW_MS=60000
 RATE_LIMIT_MAX_REQUESTS=60
 API_KEY=your_secret_api_key_here
-API_RATE_LIMIT_MAX=120
+API_RATE_LIMIT_MAX=5000
+# High-concurrency tuning (see "High-Concurrency Settings" section below)
+PG_POOL_MAX=20
+PG_IDLE_TIMEOUT_MS=30000
+PG_CONNECTION_TIMEOUT_MS=10000
+MAX_EMAIL_BYTES=1048576
+INBOX_LIST_LIMIT=20
+PM2_INSTANCES=2
 EOF
 
 # Set permission for Postfix
@@ -209,10 +220,14 @@ sudo certbot --nginx -d mail.hubify.store
 ## Step 11: Start API with PM2
 ```bash
 cd /var/www/hubify-mail/backend
-pm2 start src/index.js --name hubify-api
+pm2 start ecosystem.config.cjs --env production
 pm2 save
 pm2 startup
 ```
+
+> `ecosystem.config.cjs` menjalankan API dalam cluster mode. Atur jumlah worker via `PM2_INSTANCES` di `.env` (`max` untuk semua core, atau angka seperti `2`). Bot Telegram hanya jalan di worker instance 0 supaya tidak bentrok (error 409 getUpdates).
+>
+> Restart setelah update: `pm2 restart ecosystem.config.cjs --env production`
 
 ## Step 12: Configure Firewall
 ```bash
@@ -260,6 +275,10 @@ Open: `https://mail.hubify.store`
 cd /var/www/hubify-mail
 git pull
 
+# Run DB migrations (safe & idempotent — no data loss).
+# Adds emails.otp_code + performance indexes for high-concurrency polling.
+psql -U hubify -d hubify_mail -f sql/migrations/001_high_concurrency.sql
+
 # If schema changed (biasanya tidak perlu)
 # psql -U hubify -d hubify_mail -f sql/add-names-table.sql
 
@@ -270,7 +289,7 @@ npm run build
 
 # Restart API
 cd /var/www/hubify-mail/backend
-pm2 restart hubify-api
+pm2 restart ecosystem.config.cjs --env production
 ```
 
 ---
@@ -318,6 +337,39 @@ Setelah itu, tambah/ubah/hapus domain dari web → Postfix otomatis di-update da
 ## Adding New Email Domains
 
 See [docs/domain-guide.md](domain-guide.md) for complete guide.
+
+---
+
+## High-Concurrency Settings
+
+Untuk workload bulk (ambil OTP dari ratusan akun paralel), tuning berikut bikin sistem tahan banting. Semua via `.env` backend.
+
+| Env | Default | Fungsi |
+|-----|---------|--------|
+| `API_RATE_LIMIT_MAX` | `5000` | Limit req/menit per API key untuk `/api/ext/*`. 400 akun × poll 5 detik ≈ 4800 req/menit, jadi 5000 sudah cukup. Naikkan kalau lebih banyak. |
+| `RATE_LIMIT_MAX_REQUESTS` | `60` | Limit req/menit per IP untuk route publik + admin. Tidak kena ke `/api/ext`. |
+| `MAX_EMAIL_BYTES` | `1048576` (1MB) | Email lebih besar di-drop graceful (Postfix tidak retry selamanya). |
+| `PG_POOL_MAX` | `20` | Koneksi pool PostgreSQL per worker. |
+| `PM2_INSTANCES` | `2` | Jumlah worker cluster (`max` = semua core). |
+| `INBOX_LIST_LIMIT` | `20` | Jumlah email default di response list/polling. |
+
+**Penting — sizing koneksi database:**
+Total koneksi = `PM2_INSTANCES × PG_POOL_MAX` (plus headroom untuk pipe handler Postfix & admin tools). Pastikan PostgreSQL `max_connections` cukup. Contoh: `PM2_INSTANCES=4` × `PG_POOL_MAX=20` = 80 koneksi → set `max_connections` minimal ~120.
+
+```bash
+# Cek & naikkan max_connections PostgreSQL bila perlu
+sudo -u postgres psql -c "SHOW max_connections;"
+sudo -u postgres psql -c "ALTER SYSTEM SET max_connections = 200;"
+sudo systemctl restart postgresql
+```
+
+**Rekomendasi polling client:** poll endpoint ringan `GET /api/ext/inbox/{email}/otp/latest` tiap **5 detik**, timeout **max 60 detik** per akun, lalu `DELETE` inbox setelah OTP didapat. Detail di `docs/api-external.md`.
+
+**Apply perubahan env:**
+```bash
+sudo nano /var/www/hubify-mail/backend/.env
+pm2 restart ecosystem.config.cjs --env production
+```
 
 ---
 

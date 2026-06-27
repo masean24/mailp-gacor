@@ -7,6 +7,7 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
+    "test": "node --test",
     "cleanup": "node scripts/cleanup-cron.js",
     "create-admin": "node scripts/create-admin.js"
   },

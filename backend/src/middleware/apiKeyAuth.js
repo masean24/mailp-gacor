@@ -8,7 +8,7 @@ const apiKeyStore = new Map();
 
 const apiKeyAuth = (options = {}) => {
     const windowMs = options.windowMs || 60000;
-    const maxRequests = options.max || parseInt(process.env.API_RATE_LIMIT_MAX) || 120;
+    const maxRequests = options.max || parseInt(process.env.API_RATE_LIMIT_MAX) || 5000;
 
     // Cleanup old entries every minute
     setInterval(() => {

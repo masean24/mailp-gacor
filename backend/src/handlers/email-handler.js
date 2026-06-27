@@ -51,6 +51,14 @@ async function main() {
             process.exit(1);
         }
 
+        // Reject oversized emails. Exit 0 (success) so Postfix does NOT keep
+        // retrying / deferring a message that will always be too big.
+        const maxBytes = parseInt(process.env.MAX_EMAIL_BYTES, 10) || 1048576; // 1MB default
+        if (rawEmail.length > maxBytes) {
+            console.error(`Email too large: ${rawEmail.length} bytes > MAX_EMAIL_BYTES ${maxBytes}. Dropping.`);
+            process.exit(0); // graceful drop — no Postfix retry loop
+        }
+
         console.log(`📧 Received email (${rawEmail.length} bytes)`);
 
         // Parse email
@@ -84,27 +92,51 @@ async function main() {
         const inbox = await inboxService.getOrCreateInbox(localPart, domain.id);
         console.log(`📬 Inbox ID: ${inbox.id}`);
 
-        // Insert email
+        // Extract OTP ONCE at ingest time, then persist it on the email row so
+        // read/polling endpoints never have to re-parse bodies per request.
+        const otp = otpExtract.extractOtp(parsed.text, parsed.html, parsed.subject);
+
+        // Insert email (with extracted otp_code)
         const email = await inboxService.insertEmail(inbox.id, {
             from: parsed.from,
             subject: parsed.subject,
             text: parsed.text,
             html: parsed.html,
             hasAttachment: parsed.hasAttachment,
+            otpCode: otp || null,
         });
 
-        console.log(`✅ Email saved with ID: ${email.id}`);
+        console.log(`✅ Email saved with ID: ${email.id}${otp ? ` (OTP: ${otp})` : ''}`);
 
-        // Extract OTP for notifications
-        const otp = otpExtract.extractOtp(parsed.text, parsed.html, parsed.subject);
+        // Notifications are best-effort and must NOT slow down or fail email
+        // ingestion. The email is already saved above. Fire both with a short
+        // timeout and wait only briefly so the Postfix pipe process can exit
+        // promptly even under high concurrency.
+        const NOTIFY_TIMEOUT_MS = parseInt(process.env.NOTIFY_TIMEOUT_MS, 10) || 3000;
 
-        // Send Discord webhook notification (await before exit)
-        await discordService.sendNewEmailNotification(parsed.to, parsed.from)
-            .catch(err => console.error('⚠️ Discord notify failed:', err.message));
+        const withTimeout = (promise, label) =>
+            Promise.race([
+                Promise.resolve()
+                    .then(() => promise)
+                    .catch((err) => console.error(`⚠️ ${label} failed:`, err.message)),
+                new Promise((resolve) =>
+                    setTimeout(() => {
+                        console.error(`⚠️ ${label} timed out after ${NOTIFY_TIMEOUT_MS}ms`);
+                        resolve();
+                    }, NOTIFY_TIMEOUT_MS)
+                ),
+            ]);
 
-        // Send Telegram notification with OTP
-        await telegramService.notifyNewEmail(parsed.to, parsed.from, parsed.subject, otp)
-            .catch(err => console.error('⚠️ Telegram notify failed:', err.message));
+        await Promise.all([
+            withTimeout(
+                discordService.sendNewEmailNotification(parsed.to, parsed.from),
+                'Discord notify'
+            ),
+            withTimeout(
+                telegramService.notifyNewEmail(parsed.to, parsed.from, parsed.subject, otp),
+                'Telegram notify'
+            ),
+        ]);
 
         // Close database connection
         await db.end();

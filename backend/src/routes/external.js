@@ -154,18 +154,17 @@ router.get('/inbox/:address', async (req, res) => {
             success: true,
             data: {
                 email: address,
-                emails: emails.map((e) => {
-                    const otp = otpExtract.extractOtp(e.body_text, e.body_html, e.subject);
-                    return {
-                        id: e.id,
-                        from: e.from_address,
-                        subject: e.subject,
-                        preview: e.body_text?.substring(0, 100) || '',
-                        otp: otp || null,
-                        hasAttachment: e.has_attachment,
-                        receivedAt: e.received_at,
-                    };
-                }),
+                emails: emails.map((e) => ({
+                    id: e.id,
+                    from: e.from_address,
+                    subject: e.subject,
+                    preview: e.body_text?.substring(0, 100) || '',
+                    // Use the OTP extracted once at ingest. Fall back to a live
+                    // parse only for legacy rows saved before otp_code existed.
+                    otp: e.otp_code || otpExtract.extractOtp(e.body_text, e.body_html, e.subject) || null,
+                    hasAttachment: e.has_attachment,
+                    receivedAt: e.received_at,
+                })),
                 expiresAt: inbox.expires_at,
             },
         });
@@ -219,6 +218,48 @@ router.get('/inbox/:address/latest', async (req, res) => {
 });
 
 /**
+ * GET /api/ext/inbox/:address/otp/latest
+ * Lightweight polling endpoint: returns the latest email that already has a
+ * stored otp_code. Queries a single indexed row and does NOT parse bodies,
+ * so it's cheap to poll under high concurrency. Returns data:null if none yet.
+ */
+router.get('/inbox/:address/otp/latest', async (req, res) => {
+    try {
+        const { address } = req.params;
+
+        if (!address.includes('@')) {
+            return res.status(400).json({ success: false, error: 'Invalid email address format' });
+        }
+
+        const inbox = await inboxService.getInboxByAddress(address);
+
+        if (!inbox) {
+            return res.json({ success: true, data: null });
+        }
+
+        const email = await inboxService.getLatestOtpEmail(inbox.id);
+
+        if (!email) {
+            return res.json({ success: true, data: null });
+        }
+
+        res.json({
+            success: true,
+            data: {
+                email: address,
+                otp: email.otp_code,
+                from: email.from_address,
+                subject: email.subject,
+                receivedAt: email.received_at,
+            },
+        });
+    } catch (error) {
+        console.error('Ext API - Error fetching latest OTP:', error);
+        res.status(500).json({ success: false, error: 'Failed to fetch latest OTP' });
+    }
+});
+
+/**
  * GET /api/ext/inbox/:address/otp
  * Extract OTP code from latest email
  */
@@ -241,9 +282,11 @@ router.get('/inbox/:address/otp', async (req, res) => {
 
         const emails = await inboxService.getInboxEmails(inbox.id);
 
-        // Try to find OTP from most recent email first, then fallback to older ones
+        // Try to find OTP from most recent email first, then fallback to older ones.
+        // Prefer the stored otp_code; only re-parse bodies for legacy rows that
+        // were saved before otp_code existed.
         for (const email of emails) {
-            const otp = otpExtract.extractOtp(email.body_text, email.body_html, email.subject);
+            const otp = email.otp_code || otpExtract.extractOtp(email.body_text, email.body_html, email.subject);
             if (otp) {
                 return res.json({
                     success: true,

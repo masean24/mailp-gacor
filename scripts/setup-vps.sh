@@ -3,13 +3,13 @@
 set -Eeuo pipefail
 
 APP_NAME="hubify-mail"
-DEFAULT_REPO_URL="https://github.com/masean24/hubify-mail.git"
+DEFAULT_REPO_URL="https://github.com/masean24/mailp-gacor.git"
 DEFAULT_APP_DIR="/var/www/hubify-mail"
-DEFAULT_WEB_DOMAIN="mail.hubify.store"
-DEFAULT_MAIL_DOMAINS="hubify.store"
 DEFAULT_DB_NAME="hubify_mail"
 DEFAULT_DB_USER="hubify"
 DEFAULT_API_PORT="3000"
+DEFAULT_PM2_INSTANCES="2"
+DEFAULT_PG_POOL_MAX="20"
 
 log() {
   printf '\n\033[1;32m==>\033[0m %s\n' "$*"
@@ -42,6 +42,21 @@ prompt() {
     read -r -p "$label: " value
     printf '%s' "$value"
   fi
+}
+
+# Like prompt() but rejects empty input (loops until a value is given).
+prompt_required() {
+  local label="$1"
+  local value
+  while true; do
+    read -r -p "$label: " value
+    value="$(printf '%s' "$value" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    if [ -n "$value" ]; then
+      printf '%s' "$value"
+      return 0
+    fi
+    warn "This field is required."
+  done
 }
 
 prompt_secret() {
@@ -163,11 +178,58 @@ setup_database() {
     warn "Database schema already exists; skipping sql/schema.sql to avoid overwriting data."
   fi
 
+  # Always run high-concurrency migration (idempotent, no data loss):
+  # adds emails.otp_code + performance indexes. Safe on fresh + existing DBs.
+  if [ -f "$APP_DIR/sql/migrations/001_high_concurrency.sql" ]; then
+    log "Applying migration: 001_high_concurrency"
+    PGPASSWORD="$DB_PASS" psql -h localhost -U "$DB_USER" -d "$DB_NAME" -f "$APP_DIR/sql/migrations/001_high_concurrency.sql"
+  fi
+
   local domain_values
   domain_values="$(csv_to_sql_values "$MAIL_DOMAINS")"
   if [ -n "$domain_values" ]; then
     PGPASSWORD="$DB_PASS" psql -h localhost -U "$DB_USER" -d "$DB_NAME" \
       -c "INSERT INTO domains (domain) VALUES ${domain_values} ON CONFLICT (domain) DO UPDATE SET is_active = true;"
+  fi
+
+  tune_postgres_connections
+}
+
+# Make sure PostgreSQL max_connections can handle the worker pools plus the
+# Postfix pipe handlers that open a short-lived connection per inbound email.
+# Needed headroom = (PM2 workers * PG_POOL_MAX) + buffer for pipe/admin/cron.
+tune_postgres_connections() {
+  local workers="$PM2_INSTANCES"
+  # "max" -> use CPU core count for the estimate.
+  if [ "$workers" = "max" ]; then
+    workers="$(nproc 2>/dev/null || echo 4)"
+  fi
+
+  # Guard against non-numeric input.
+  case "$workers" in
+    ''|*[!0-9]*) workers=2 ;;
+  esac
+
+  local pool="$PG_POOL_MAX"
+  case "$pool" in
+    ''|*[!0-9]*) pool=20 ;;
+  esac
+
+  # App pools + 50 headroom for Postfix pipe handlers, admin tools, cron.
+  local needed=$(( workers * pool + 50 ))
+
+  local current
+  current="$(sudo -u postgres psql -tAc "SHOW max_connections;" 2>/dev/null | tr -d '[:space:]')"
+  case "$current" in
+    ''|*[!0-9]*) current=100 ;;
+  esac
+
+  if [ "$needed" -gt "$current" ]; then
+    log "Raising PostgreSQL max_connections: ${current} -> ${needed} (workers=${workers} x pool=${pool} + headroom)"
+    sudo -u postgres psql -c "ALTER SYSTEM SET max_connections = ${needed};" || warn "Could not set max_connections; do it manually."
+    systemctl restart postgresql || warn "Could not restart PostgreSQL; restart it manually to apply max_connections."
+  else
+    log "PostgreSQL max_connections=${current} is sufficient (need ~${needed})."
   fi
 }
 
@@ -182,7 +244,14 @@ RATE_LIMIT_WINDOW_MS=60000
 RATE_LIMIT_MAX_REQUESTS=60
 POSTFIX_SYNC_ENABLED=${POSTFIX_SYNC_ENABLED}
 API_KEY=${API_KEY}
-API_RATE_LIMIT_MAX=120
+API_RATE_LIMIT_MAX=${API_RATE_LIMIT_MAX}
+PG_POOL_MAX=${PG_POOL_MAX}
+PG_IDLE_TIMEOUT_MS=30000
+PG_CONNECTION_TIMEOUT_MS=10000
+MAX_EMAIL_BYTES=1048576
+NOTIFY_TIMEOUT_MS=3000
+INBOX_LIST_LIMIT=20
+PM2_INSTANCES=${PM2_INSTANCES}
 TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
 TELEGRAM_OWNER_ID=${TELEGRAM_OWNER_ID}
 TELEGRAM_CHANNEL_ID=${TELEGRAM_CHANNEL_ID}
@@ -282,13 +351,13 @@ create_admin() {
 }
 
 start_pm2() {
-  log "Starting backend with PM2"
+  log "Starting backend with PM2 (cluster mode via ecosystem.config.cjs)"
   local run_user="${SUDO_USER:-root}"
 
   if sudo -u "$run_user" pm2 describe hubify-api >/dev/null 2>&1; then
-    sudo -u "$run_user" pm2 restart hubify-api --update-env
+    sudo -u "$run_user" bash -lc "cd '$APP_DIR/backend' && pm2 restart ecosystem.config.cjs --env production --update-env"
   else
-    sudo -u "$run_user" bash -lc "cd '$APP_DIR/backend' && pm2 start src/index.js --name hubify-api"
+    sudo -u "$run_user" bash -lc "cd '$APP_DIR/backend' && pm2 start ecosystem.config.cjs --env production"
   fi
 
   sudo -u "$run_user" pm2 save
@@ -352,8 +421,8 @@ main() {
   log "Hubify Mail VPS setup"
   REPO_URL="$(prompt "Git repo URL" "$DEFAULT_REPO_URL")"
   APP_DIR="$(prompt "Install directory" "$DEFAULT_APP_DIR")"
-  WEB_DOMAIN="$(prompt "Web/mail host domain" "$DEFAULT_WEB_DOMAIN")"
-  MAIL_DOMAINS="$(prompt "Email domains, comma-separated" "$DEFAULT_MAIL_DOMAINS")"
+  WEB_DOMAIN="$(prompt_required "Web/mail host domain (e.g. mail.yourdomain.com)")"
+  MAIL_DOMAINS="$(prompt_required "Email domains, comma-separated (e.g. yourdomain.com,alt.com)")"
   PRIMARY_MAIL_DOMAIN="$(printf "%s" "$MAIL_DOMAINS" | cut -d ',' -f 1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
   DB_NAME="$(prompt "PostgreSQL database name" "$DEFAULT_DB_NAME")"
   DB_USER="$(prompt "PostgreSQL user" "$DEFAULT_DB_USER")"
@@ -363,6 +432,9 @@ main() {
   JWT_SECRET="$(prompt_secret "JWT secret" "$(random_secret)")"
   API_KEY="$(prompt_secret "External API key" "$(random_secret)")"
   API_PORT="$(prompt "Backend port" "$DEFAULT_API_PORT")"
+  PM2_INSTANCES="$(prompt "PM2 cluster instances (number or 'max')" "$DEFAULT_PM2_INSTANCES")"
+  API_RATE_LIMIT_MAX="$(prompt "External API rate limit (req/min per key)" "5000")"
+  PG_POOL_MAX="$(prompt "PostgreSQL pool size per worker" "$DEFAULT_PG_POOL_MAX")"
   ADMIN_USER="$(prompt "Admin username, empty to skip" "admin")"
   ADMIN_PASS="$(prompt_secret "Admin password, empty to skip" "$(random_secret)")"
   LETSENCRYPT_EMAIL="$(prompt "Let's Encrypt email, empty allowed" "")"

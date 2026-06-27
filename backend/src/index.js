@@ -19,13 +19,24 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-// Rate limiting for public API
-app.use('/api', rateLimit());
-
 // Routes
-app.use('/api', publicRoutes);
-app.use('/api/admin', adminRoutes);
+//
+// IMPORTANT: route order matters for rate limiting.
+// External API (/api/ext) is mounted FIRST and carries its own per-API-key
+// rate limit (API_RATE_LIMIT_MAX) inside apiKeyAuth(). It must NOT be subject
+// to the public IP rate limit (RATE_LIMIT_MAX_REQUESTS) so automation clients
+// hitting high concurrency are governed only by API_RATE_LIMIT_MAX.
+//
+// Because Express matches mounts in registration order and a matched ext route
+// sends its response, /api/ext traffic never falls through to the public
+// limiter mounted on '/api' below.
 app.use('/api/ext', externalRoutes);
+
+// Admin keeps the public IP rate limiter (it is also JWT protected).
+app.use('/api/admin', rateLimit(), adminRoutes);
+
+// Public routes: governed by the public IP rate limit (RATE_LIMIT_MAX_REQUESTS).
+app.use('/api', rateLimit(), publicRoutes);
 
 // Health check
 app.get('/health', (req, res) => {
@@ -74,8 +85,17 @@ app.listen(PORT, () => {
   ╚═══════════════════════════════════════════════╝
   `);
 
-    // Start Telegram bot
-    telegramService.startBot();
+    // Start Telegram bot.
+    // Under PM2 cluster mode, only ONE worker may run the long-polling bot;
+    // otherwise Telegram returns 409 (getUpdates conflict). PM2 sets
+    // NODE_APP_INSTANCE per worker, so we start the bot only on instance "0".
+    // In single-process mode (no PM2) NODE_APP_INSTANCE is undefined → bot runs.
+    const appInstance = process.env.NODE_APP_INSTANCE;
+    if (appInstance === undefined || appInstance === '0') {
+        telegramService.startBot();
+    } else {
+        console.log(`ℹ️  Telegram bot skipped on worker ${appInstance} (runs only on instance 0)`);
+    }
 });
 
 export default app;

@@ -166,16 +166,14 @@ router.get('/otp/:address', async (req, res) => {
 
         const emails = await inboxService.getInboxEmails(inbox.id);
 
-        const items = emails.map((e) => {
-            const otp = otpExtract.extractOtp(e.body_text, e.body_html, e.subject);
-            return {
-                id: e.id,
-                from: e.from_address,
-                subject: e.subject,
-                receivedAt: e.received_at,
-                otp: otp || null,
-            };
-        });
+        const items = emails.map((e) => ({
+            id: e.id,
+            from: e.from_address,
+            subject: e.subject,
+            receivedAt: e.received_at,
+            // Prefer OTP extracted at ingest; re-parse only legacy rows.
+            otp: e.otp_code || otpExtract.extractOtp(e.body_text, e.body_html, e.subject) || null,
+        }));
 
         res.json({
             success: true,
@@ -229,18 +227,16 @@ router.get('/inbox/:address', async (req, res) => {
             success: true,
             data: {
                 email: address,
-                emails: emails.map((e) => {
-                    const otp = otpExtract.extractOtp(e.body_text, e.body_html, e.subject);
-                    return {
-                        id: e.id,
-                        from: e.from_address,
-                        subject: e.subject,
-                        preview: e.body_text?.substring(0, 100) || '',
-                        otp: otp || null,
-                        hasAttachment: e.has_attachment,
-                        receivedAt: e.received_at,
-                    };
-                }),
+                emails: emails.map((e) => ({
+                    id: e.id,
+                    from: e.from_address,
+                    subject: e.subject,
+                    preview: e.body_text?.substring(0, 100) || '',
+                    // Prefer OTP extracted at ingest; re-parse only legacy rows.
+                    otp: e.otp_code || otpExtract.extractOtp(e.body_text, e.body_html, e.subject) || null,
+                    hasAttachment: e.has_attachment,
+                    receivedAt: e.received_at,
+                })),
                 expiresAt: inbox.expires_at,
             },
         });

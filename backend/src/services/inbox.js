@@ -1,5 +1,11 @@
 import db from '../config/database.js';
 
+// Default number of emails returned in list/polling responses.
+// Keeps inbox responses bounded; full content is available via getEmailById.
+const DEFAULT_INBOX_LIMIT = parseInt(process.env.INBOX_LIST_LIMIT, 10) || 20;
+// Hard cap so an explicit caller-provided limit can't request unbounded rows.
+const MAX_INBOX_LIMIT = 100;
+
 /**
  * Generate random string for email local part
  */
@@ -73,17 +79,39 @@ export const getInboxByAddress = async (address) => {
 };
 
 /**
- * Get emails for inbox
+ * Get emails for inbox.
+ * Includes the stored otp_code so callers don't need to re-parse bodies.
+ * Defaults to a bounded limit for list/polling responses; detail views
+ * should fetch a single email via getEmailById instead.
  */
-export const getInboxEmails = async (inboxId) => {
+export const getInboxEmails = async (inboxId, limit = DEFAULT_INBOX_LIMIT) => {
+    const safeLimit = Math.min(Math.max(parseInt(limit, 10) || DEFAULT_INBOX_LIMIT, 1), MAX_INBOX_LIMIT);
     const result = await db.query(
-        `SELECT id, from_address, subject, body_text, body_html, has_attachment, received_at 
+        `SELECT id, from_address, subject, body_text, body_html, otp_code, has_attachment, received_at 
      FROM emails 
      WHERE inbox_id = $1 
-     ORDER BY received_at DESC`,
-        [inboxId]
+     ORDER BY received_at DESC
+     LIMIT $2`,
+        [inboxId, safeLimit]
     );
     return result.rows;
+};
+
+/**
+ * Get the most recent email for an inbox that already has a stored otp_code.
+ * Lightweight: no body parsing, single row. Returns undefined if none.
+ * Used by the polling-friendly /otp/latest endpoint.
+ */
+export const getLatestOtpEmail = async (inboxId) => {
+    const result = await db.query(
+        `SELECT id, from_address, subject, otp_code, received_at
+     FROM emails
+     WHERE inbox_id = $1 AND otp_code IS NOT NULL
+     ORDER BY received_at DESC
+     LIMIT 1`,
+        [inboxId]
+    );
+    return result.rows[0];
 };
 
 /**
@@ -102,16 +130,18 @@ export const getEmailById = async (emailId) => {
 };
 
 /**
- * Insert new email
+ * Insert new email.
+ * otpCode is extracted once at ingest time (in email-handler.js) and stored,
+ * so read endpoints don't re-parse bodies on every request.
  */
 export const insertEmail = async (inboxId, emailData) => {
-    const { from, subject, text, html, hasAttachment } = emailData;
+    const { from, subject, text, html, hasAttachment, otpCode } = emailData;
 
     const result = await db.query(
-        `INSERT INTO emails (inbox_id, from_address, subject, body_text, body_html, has_attachment)
-     VALUES ($1, $2, $3, $4, $5, $6)
+        `INSERT INTO emails (inbox_id, from_address, subject, body_text, body_html, otp_code, has_attachment)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
      RETURNING *`,
-        [inboxId, from, subject, text, html, hasAttachment || false]
+        [inboxId, from, subject, text, html, otpCode || null, hasAttachment || false]
     );
 
     return result.rows[0];
@@ -194,6 +224,7 @@ export default {
     getOrCreateInbox,
     getInboxByAddress,
     getInboxEmails,
+    getLatestOtpEmail,
     getEmailById,
     insertEmail,
     deleteInbox,
