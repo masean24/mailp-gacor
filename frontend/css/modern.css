@@ -1359,33 +1359,82 @@ body.light-mode .modal__body {
   width: 100%;
 }
 
-.names-badge {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0.5rem 0.75rem;
-  background-color: var(--scrollbar-track);
+.name-card {
+  background-color: var(--card-bg);
   border: 1px solid var(--border-color);
-  border-radius: 0.5rem;
-  font-size: 0.85rem;
-  font-weight: 600;
+  border-radius: 0.75rem;
+  padding: 0.75rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  box-shadow: var(--shadow);
+}
+
+.name-card--inactive {
+  opacity: 0.5;
+}
+
+.name-card__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.name-card__name {
+  font-weight: 700;
+  font-size: 0.95rem;
   color: var(--text-primary);
+  text-transform: capitalize;
 }
 
-.names-badge:hover {
-  background-color: var(--card-bg-hover);
-}
-
-.names-badge__delete {
-  background: none;
-  border: none;
-  color: var(--text-muted);
-  cursor: pointer;
-  padding: 0.15rem 0.35rem;
+.name-card__gender {
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  padding: 0.15rem 0.45rem;
   border-radius: 0.25rem;
+  line-height: 1;
 }
 
-.names-badge__delete:hover {
-  color: var(--error-text);
-  background-color: var(--error-bg);
+.name-card__gender--male {
+  background-color: rgba(59, 130, 246, 0.1);
+  color: #60a5fa;
+}
+
+.name-card__gender--female {
+  background-color: rgba(236, 72, 153, 0.1);
+  color: #f472b6;
+}
+
+.name-card__gender--neutral {
+  background-color: var(--scrollbar-track);
+  color: var(--text-secondary);
+}
+
+body.light-mode .name-card__gender--male {
+  background-color: rgba(37, 99, 235, 0.08);
+  color: #1d4ed8;
+}
+
+body.light-mode .name-card__gender--female {
+  background-color: rgba(219, 39, 119, 0.08);
+  color: #be185d;
+}
+
+.name-card__actions {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.name-card__actions .btn {
+  flex: 1;
+  padding: 0.4rem 0.5rem;
+  font-size: 0.75rem;
+  border-radius: 0.5rem;
+  height: 1.85rem;
+  line-height: 1;
+  font-weight: 600;
+  border: 1px solid var(--border-color);
 }
