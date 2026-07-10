@@ -310,9 +310,10 @@ sudo bash /path/to/hubify-mail/scripts/update-vps.sh /path/to/hubify-mail
 ```
 
 Backups are stored under `/var/backups/hubify-mail/<UTC timestamp>/`. The
-script refuses to update when tracked files contain uncommitted changes and
-never rewrites API keys, JWT secrets, database credentials, Telegram settings,
-emails, or reservations. Only one update process can run at a time.
+script refuses to update when tracked file contents contain uncommitted changes.
+It adds missing feature environment keys on older installations, but never
+rewrites existing API keys, JWT secrets, database credentials, Telegram
+settings, emails, or reservations. Only one update process can run at a time.
 
 ---
 

@@ -77,6 +77,7 @@ check_prerequisites() {
   need_command curl
   need_command flock
   need_command nginx
+  need_command openssl
   need_command systemctl
 
   RUN_USER="$(stat -c '%U' "$APP_DIR")"
@@ -99,6 +100,56 @@ check_prerequisites() {
   if ! run_as_app git -c core.fileMode=false -C "$APP_DIR" diff --quiet \
     || ! run_as_app git -c core.fileMode=false -C "$APP_DIR" diff --cached --quiet; then
     die "Tracked file contents have local changes. Commit or stash them before updating."
+  fi
+}
+
+append_env_if_missing() {
+  local key="$1"
+  local value="$2"
+  if grep -q "^${key}=" "$ENV_FILE"; then
+    return 0
+  fi
+  printf '%s=%s\n' "$key" "$value" >> "$ENV_FILE"
+  ADDED_ENV_KEYS+=("$key")
+}
+
+detect_mail_host() {
+  local mail_host
+  mail_host="$(read_env_value MAIL_SERVER_HOSTNAME)"
+
+  if [ -z "$mail_host" ] && [ -r /etc/nginx/sites-enabled/hubify ]; then
+    mail_host="$(awk '$1 == "server_name" { gsub(/;/, "", $2); print $2; exit }' /etc/nginx/sites-enabled/hubify)"
+  fi
+  if [ -z "$mail_host" ] && command -v postconf >/dev/null 2>&1; then
+    mail_host="$(postconf -h myhostname 2>/dev/null || true)"
+  fi
+
+  if ! printf '%s' "$mail_host" | grep -Eq '^[a-zA-Z0-9][a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'; then
+    die "Could not detect the public mail hostname. Add MAIL_SERVER_HOSTNAME and CORS_ALLOWED_ORIGINS to $ENV_FILE, then retry."
+  fi
+  printf '%s' "$mail_host"
+}
+
+ensure_env_defaults() {
+  log "Adding missing environment keys without changing existing values"
+  local mail_host
+  mail_host="$(detect_mail_host)"
+  ADDED_ENV_KEYS=()
+
+  append_env_if_missing INBOX_ACCESS_JWT_SECRET "$(openssl rand -hex 32)"
+  append_env_if_missing INBOX_ACCESS_TOKEN_TTL "15m"
+  append_env_if_missing INBOX_UNLOCK_MAX_ATTEMPTS "5"
+  append_env_if_missing INBOX_UNLOCK_WINDOW_MS "900000"
+  append_env_if_missing PUBLIC_RESERVATION_MAX_PER_IP "5"
+  append_env_if_missing PUBLIC_RESERVATION_TTL_DAYS "7"
+  append_env_if_missing INBOX_RESERVATION_IP_SALT "$(openssl rand -hex 32)"
+  append_env_if_missing MAIL_SERVER_HOSTNAME "$mail_host"
+  append_env_if_missing CORS_ALLOWED_ORIGINS "https://${mail_host},http://${mail_host}"
+
+  if [ "${#ADDED_ENV_KEYS[@]}" -gt 0 ]; then
+    log "Added environment keys: ${ADDED_ENV_KEYS[*]}"
+  else
+    log "Environment already contains all required keys"
   fi
 }
 
@@ -179,13 +230,14 @@ Backup:  ${BACKUP_DIR}
 Health:  http://127.0.0.1:${API_PORT}/health
 
 The existing .env, API keys, JWT secrets, database password, Telegram config,
-emails, and reservations were preserved.
+emails, and reservations were preserved. Missing feature keys were added safely.
 EOF
 }
 
 main() {
   check_prerequisites
   backup_current_install
+  ensure_env_defaults
   pull_code
   apply_migrations
   install_and_build
