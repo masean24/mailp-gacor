@@ -126,6 +126,18 @@ node scripts/create-admin.js admin yourpassword
 
 See [VPS Setup Guide](docs/vps-setup.md) for full deployment instructions.
 
+Fresh VPS:
+
+```bash
+sudo bash scripts/setup-vps.sh
+```
+
+Existing VPS (preserves `.env`, database, API keys, and secrets):
+
+```bash
+sudo bash scripts/update-vps.sh
+```
+
 ## Adding New Domains
 
 See [Domain Guide](docs/domain-guide.md) for adding new email domains.

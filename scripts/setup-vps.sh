@@ -434,6 +434,9 @@ Useful checks:
   sudo tail -f /var/log/mail.log
   sudo postconf virtual_mailbox_domains
 
+Future one-command updates:
+  cd ${APP_DIR} && sudo bash scripts/update-vps.sh
+
 If email does not arrive, make sure:
   - A record: ${WEB_DOMAIN} -> this VPS public IP
   - MX record: each mail domain -> ${WEB_DOMAIN}

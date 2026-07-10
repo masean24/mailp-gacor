@@ -286,29 +286,33 @@ Open: `https://mail.hubify.store`
 
 ## Updating the Application
 
+Use the update script on an existing installation. It preserves `backend/.env`,
+creates an environment + PostgreSQL backup, pulls the tracked branch, applies
+all migrations in filename order, rebuilds the frontend, reloads PM2 and
+Nginx, then checks `/health`.
+
+For the first update that adds this script, use one command:
+
 ```bash
-cd /var/www/hubify-mail
-git pull
-
-# Run DB migrations (safe & idempotent — no data loss).
-# Adds emails.otp_code + performance indexes for high-concurrency polling.
-psql -U hubify -d hubify_mail -f sql/migrations/001_high_concurrency.sql
-psql -U hubify -d hubify_mail -f sql/migrations/002_protected_inboxes_and_domain_verification.sql
-psql -U hubify -d hubify_mail -f sql/migrations/003_reservation_management.sql
-psql -U hubify -d hubify_mail -f sql/migrations/004_protected_inbox_lifetime.sql
-
-# If schema changed (biasanya tidak perlu)
-# psql -U hubify -d hubify_mail -f sql/add-names-table.sql
-
-# Rebuild frontend
-cd frontend
-npm install
-npm run build
-
-# Restart API
-cd /var/www/hubify-mail/backend
-pm2 restart ecosystem.config.cjs --env production
+cd /var/www/hubify-mail && git pull --ff-only && sudo bash scripts/update-vps.sh
 ```
+
+After that, every update is:
+
+```bash
+cd /var/www/hubify-mail && sudo bash scripts/update-vps.sh
+```
+
+If the repository lives elsewhere, pass its absolute path:
+
+```bash
+sudo bash /path/to/hubify-mail/scripts/update-vps.sh /path/to/hubify-mail
+```
+
+Backups are stored under `/var/backups/hubify-mail/<UTC timestamp>/`. The
+script refuses to update when tracked files contain uncommitted changes and
+never rewrites API keys, JWT secrets, database credentials, Telegram settings,
+emails, or reservations. Only one update process can run at a time.
 
 ---
 
@@ -316,7 +320,7 @@ pm2 restart ecosystem.config.cjs --env production
 
 Agar domain yang kamu tambah dari Admin Dashboard langsung terdeteksi Postfix (tanpa edit `main.cf` manual), lakukan sekali di VPS:
 
-**1. Update kode dulu** (lihat "Updating the Application" di atas).
+**1. Update kode dulu** dengan `scripts/update-vps.sh` di atas.
 
 **2. Script executable:**
 ```bash
