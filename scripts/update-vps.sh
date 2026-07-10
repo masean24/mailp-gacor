@@ -93,9 +93,12 @@ check_prerequisites() {
   API_PORT="$(read_env_value PORT)"
   API_PORT="${API_PORT:-3000}"
 
-  if ! run_as_app git -C "$APP_DIR" diff --quiet \
-    || ! run_as_app git -C "$APP_DIR" diff --cached --quiet; then
-    die "Tracked files have local changes. Commit or stash them before updating."
+  # setup-vps.sh intentionally makes the Postfix sync helper executable.
+  # Ignore permission-bit-only differences, but still stop for staged or
+  # unstaged content changes so an update never overwrites user edits.
+  if ! run_as_app git -c core.fileMode=false -C "$APP_DIR" diff --quiet \
+    || ! run_as_app git -c core.fileMode=false -C "$APP_DIR" diff --cached --quiet; then
+    die "Tracked file contents have local changes. Commit or stash them before updating."
   fi
 }
 
@@ -109,7 +112,7 @@ backup_current_install() {
 
 pull_code() {
   log "Pulling the latest code"
-  run_as_app git -C "$APP_DIR" pull --ff-only
+  run_as_app git -c core.fileMode=false -C "$APP_DIR" pull --ff-only
 }
 
 apply_migrations() {
