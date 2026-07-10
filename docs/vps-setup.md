@@ -22,7 +22,7 @@ cd /var/www/hubify-mail
 sudo bash scripts/setup-vps.sh
 ```
 
-The installer asks for the web/mail host domain, email domains, database password, JWT secret, external API key, admin login, optional Telegram config, and optional HTTPS setup.
+The installer asks for the web/mail host domain, email domains, database password, JWT secret, external API key, admin login, public protected-inbox limits, optional Telegram config, and optional HTTPS setup. It automatically generates the protected-inbox token secret and reservation IP salt, writes all required environment variables, and applies every database migration in order.
 
 After install, point DNS to the VPS:
 
@@ -90,6 +90,9 @@ psql -U hubify -d hubify_mail -f sql/schema.sql
 # Fresh installs already include otp_code + indexes. If you are upgrading an
 # EXISTING database, run the migration instead (safe, no data loss):
 # psql -U hubify -d hubify_mail -f sql/migrations/001_high_concurrency.sql
+# psql -U hubify -d hubify_mail -f sql/migrations/002_protected_inboxes_and_domain_verification.sql
+# psql -U hubify -d hubify_mail -f sql/migrations/003_reservation_management.sql
+# psql -U hubify -d hubify_mail -f sql/migrations/004_protected_inbox_lifetime.sql
 ```
 
 ## Step 5: Setup Backend
@@ -103,6 +106,12 @@ DATABASE_URL=postgresql://hubify:your_secure_password@localhost:5432/hubify_mail
 PORT=3000
 NODE_ENV=production
 JWT_SECRET=your_super_secret_jwt_key_change_this
+INBOX_ACCESS_JWT_SECRET=another_long_random_secret_for_protected_inbox_tokens
+PUBLIC_RESERVATION_MAX_PER_IP=5
+PUBLIC_RESERVATION_TTL_DAYS=7
+INBOX_RESERVATION_IP_SALT=replace_with_a_long_random_secret
+CORS_ALLOWED_ORIGINS=https://mail.hubify.store
+MAIL_SERVER_HOSTNAME=mail.hubify.store
 RATE_LIMIT_WINDOW_MS=60000
 RATE_LIMIT_MAX_REQUESTS=60
 API_KEY=your_secret_api_key_here
@@ -185,6 +194,12 @@ server {
     server_name mail.hubify.store;
 
     root /var/www/hubify-mail/frontend/dist;
+
+    # Browser hardening for the static frontend.
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header Permissions-Policy "camera=(), microphone=(), geolocation=()" always;
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https:; connect-src 'self'; frame-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'" always;
 
     # /admin (tanpa .html) → tampilkan halaman admin, bukan main page
     location = /admin {
@@ -278,6 +293,9 @@ git pull
 # Run DB migrations (safe & idempotent — no data loss).
 # Adds emails.otp_code + performance indexes for high-concurrency polling.
 psql -U hubify -d hubify_mail -f sql/migrations/001_high_concurrency.sql
+psql -U hubify -d hubify_mail -f sql/migrations/002_protected_inboxes_and_domain_verification.sql
+psql -U hubify -d hubify_mail -f sql/migrations/003_reservation_management.sql
+psql -U hubify -d hubify_mail -f sql/migrations/004_protected_inbox_lifetime.sql
 
 # If schema changed (biasanya tidak perlu)
 # psql -U hubify -d hubify_mail -f sql/add-names-table.sql

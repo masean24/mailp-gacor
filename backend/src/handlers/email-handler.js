@@ -24,6 +24,7 @@ import domainService from '../services/domain.js';
 import discordService from '../services/discord.js';
 import telegramService from '../services/telegram.js';
 import otpExtract from '../services/otpExtract.js';
+import inboxAccessService from '../services/inboxAccess.js';
 import db from '../config/database.js';
 
 /**
@@ -83,7 +84,7 @@ async function main() {
             process.exit(0); // Exit gracefully - domain not registered
         }
 
-        if (!domain.is_active) {
+        if (!domain.is_active || domain.verification_status !== 'active') {
             console.error('Domain is inactive:', domainName);
             process.exit(0);
         }
@@ -127,16 +128,22 @@ async function main() {
                 ),
             ]);
 
-        await Promise.all([
-            withTimeout(
-                discordService.sendNewEmailNotification(parsed.to, parsed.from),
-                'Discord notify'
-            ),
-            withTimeout(
-                telegramService.notifyNewEmail(parsed.to, parsed.from, parsed.subject, otp),
-                'Telegram notify'
-            ),
-        ]);
+        // Sender, subject, and OTP notifications would otherwise bypass the
+        // protected inbox password, so protected addresses stay silent here.
+        if (await inboxAccessService.isAddressProtected(parsed.to)) {
+            console.log('Protected inbox: external notifications skipped');
+        } else {
+            await Promise.all([
+                withTimeout(
+                    discordService.sendNewEmailNotification(parsed.to, parsed.from),
+                    'Discord notify'
+                ),
+                withTimeout(
+                    telegramService.notifyNewEmail(parsed.to, parsed.from, parsed.subject, otp),
+                    'Telegram notify'
+                ),
+            ]);
+        }
 
         // Close database connection
         await db.end();

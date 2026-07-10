@@ -3,14 +3,20 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-const JWT_SECRET = process.env.JWT_SECRET || 'default-secret-change-me';
+const getJwtSecret = () => {
+    const secret = process.env.JWT_SECRET;
+    if (!secret || secret === 'default-secret-change-me' || secret === 'your_super_secret_jwt_key_change_this') {
+        throw new Error('JWT_SECRET must be configured with a strong value');
+    }
+    return secret;
+};
 
 export const generateToken = (payload) => {
-    return jwt.sign(payload, JWT_SECRET, { expiresIn: '24h' });
+    return jwt.sign(payload, getJwtSecret(), { expiresIn: '24h' });
 };
 
 export const verifyToken = (token) => {
-    return jwt.verify(token, JWT_SECRET);
+    return jwt.verify(token, getJwtSecret());
 };
 
 export const authMiddleware = (req, res, next) => {

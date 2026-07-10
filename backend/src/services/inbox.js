@@ -27,7 +27,15 @@ export const getOrCreateInbox = async (localPart, domainId) => {
         `SELECT i.*, d.domain 
      FROM inboxes i 
      JOIN domains d ON i.domain_id = d.id 
-     WHERE i.local_part = $1 AND i.domain_id = $2 AND i.expires_at > NOW()`,
+     WHERE i.local_part = $1 AND i.domain_id = $2
+       AND (
+         i.expires_at IS NULL OR i.expires_at > NOW()
+         OR EXISTS (
+           SELECT 1 FROM inbox_reservations r
+           WHERE r.local_part = i.local_part AND r.domain_id = i.domain_id
+             AND (r.expires_at IS NULL OR r.expires_at > NOW())
+         )
+       )`,
         [localPart.toLowerCase(), domainId]
     );
 
@@ -71,7 +79,15 @@ export const getInboxByAddress = async (address) => {
         `SELECT i.*, d.domain 
      FROM inboxes i 
      JOIN domains d ON i.domain_id = d.id 
-     WHERE i.local_part = $1 AND d.domain = $2 AND i.expires_at > NOW()`,
+     WHERE i.local_part = $1 AND d.domain = $2
+       AND (
+         i.expires_at IS NULL OR i.expires_at > NOW()
+         OR EXISTS (
+           SELECT 1 FROM inbox_reservations r
+           WHERE r.local_part = i.local_part AND r.domain_id = i.domain_id
+             AND (r.expires_at IS NULL OR r.expires_at > NOW())
+         )
+       )`,
         [localPart, domain]
     );
 
@@ -159,7 +175,13 @@ export const deleteInbox = async (inboxId) => {
  */
 export const countActiveInboxes = async () => {
     const result = await db.query(
-        'SELECT COUNT(*) as count FROM inboxes WHERE expires_at > NOW()'
+        `SELECT COUNT(*) as count FROM inboxes i
+         WHERE i.expires_at IS NULL OR i.expires_at > NOW()
+           OR EXISTS (
+             SELECT 1 FROM inbox_reservations r
+             WHERE r.local_part = i.local_part AND r.domain_id = i.domain_id
+               AND (r.expires_at IS NULL OR r.expires_at > NOW())
+           )`
     );
     return parseInt(result.rows[0].count);
 };
@@ -174,6 +196,9 @@ export const getRecentEmails = async (limit = 50) => {
      FROM emails e
      JOIN inboxes i ON e.inbox_id = i.id
      JOIN domains d ON i.domain_id = d.id
+     LEFT JOIN inbox_reservations r
+        ON r.local_part = i.local_part AND r.domain_id = i.domain_id AND r.is_active = true
+     WHERE r.id IS NULL
      ORDER BY e.received_at DESC
      LIMIT $1`,
         [limit]

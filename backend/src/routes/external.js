@@ -1,12 +1,25 @@
 import { Router } from 'express';
 import domainService from '../services/domain.js';
 import inboxService from '../services/inbox.js';
+import inboxAccessService from '../services/inboxAccess.js';
 import namesService from '../services/names.js';
 import otpExtract from '../services/otpExtract.js';
-import postfixSync from '../services/postfixSync.js';
 import apiKeyAuth from '../middleware/apiKeyAuth.js';
 
 const router = Router();
+const isActiveDomain = (domain) => domain?.is_active && domain?.verification_status === 'active';
+
+// External API is deliberately limited to public inboxes. Its API key must
+// never become a bypass for a password-reserved address.
+const requirePublicInbox = async (res, address) => {
+    if (!(await inboxAccessService.isAddressProtected(address))) return true;
+    res.status(423).json({
+        success: false,
+        error: 'Inbox is protected and cannot be accessed through the external API',
+        requiresPassword: true,
+    });
+    return false;
+};
 
 // All external routes require API key
 router.use(apiKeyAuth());
@@ -29,7 +42,8 @@ router.get('/domains', async (req, res) => {
  * POST /api/ext/domains
  * Add a new domain (add-only; no delete/disable exposed externally).
  * Body: { domain: string }
- * Triggers Postfix sync when POSTFIX_SYNC_ENABLED=true.
+ * Creates a pending domain. DNS verification and Postfix activation must be
+ * completed in the admin dashboard before it can receive email.
  */
 router.post('/domains', async (req, res) => {
     try {
@@ -39,8 +53,7 @@ router.post('/domains', async (req, res) => {
             return res.status(400).json({ success: false, error: 'Domain is required' });
         }
 
-        // Validate domain format (same rule as admin API)
-        if (!/^[a-zA-Z0-9][a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(domain)) {
+        if (!domainService.DOMAIN_PATTERN.test(domain)) {
             return res.status(400).json({ success: false, error: 'Invalid domain format' });
         }
 
@@ -51,14 +64,12 @@ router.post('/domains', async (req, res) => {
         }
 
         const newDomain = await domainService.createDomain(domain);
-
-        const syncResult = await postfixSync.syncPostfix();
-        const payload = { success: true, data: newDomain };
-        if (!syncResult.success && !syncResult.skipped) {
-            payload.postfixSyncWarning = syncResult.error || 'Postfix config was not updated. Update virtual_mailbox_domains on the VPS manually.';
-        }
-
-        res.status(201).json(payload);
+        res.status(201).json({
+            success: true,
+            data: newDomain,
+            setup: domainService.getVerificationInstructions(newDomain),
+            message: 'Domain is pending DNS verification and admin activation.',
+        });
     } catch (error) {
         console.error('Ext API - Error creating domain:', error);
         res.status(500).json({ success: false, error: 'Failed to create domain' });
@@ -87,18 +98,28 @@ router.post('/inbox/create', async (req, res) => {
 
         // Validate domain
         const domain = await domainService.getDomainById(domainId);
-        if (!domain || !domain.is_active) {
+        if (!isActiveDomain(domain)) {
             return res.status(400).json({ success: false, error: 'Invalid or inactive domain' });
         }
 
-        // Generate localPart if not provided
+        // Generate localPart if not provided. Never return a reserved address
+        // to the API, even by chance.
         if (!localPart) {
-            const firstNameResult = await namesService.getRandomNameByGender(gender || 'random');
-            const lastNameResult = await namesService.getRandomNameByGender(firstNameResult.gender);
-            const randomNum = Math.floor(Math.random() * 90) + 10;
-            localPart = (firstNameResult.name && lastNameResult.name)
-                ? `${firstNameResult.name}${lastNameResult.name}${randomNum}`
-                : inboxService.generateRandomLocalPart();
+            for (let attempt = 0; attempt < 5; attempt += 1) {
+                const firstNameResult = await namesService.getRandomNameByGender(gender || 'random');
+                const lastNameResult = await namesService.getRandomNameByGender(firstNameResult.gender);
+                const randomNum = Math.floor(Math.random() * 90) + 10;
+                const candidate = (firstNameResult.name && lastNameResult.name)
+                    ? `${firstNameResult.name}${lastNameResult.name}${randomNum}`
+                    : inboxService.generateRandomLocalPart();
+                if (!(await inboxAccessService.isAddressProtected(`${candidate}@${domain.domain}`))) {
+                    localPart = candidate;
+                    break;
+                }
+            }
+            if (!localPart) {
+                return res.status(503).json({ success: false, error: 'Unable to generate a public email. Please try again.' });
+            }
         } else {
             // Validate custom local part
             if (!/^[a-zA-Z0-9._-]+$/.test(localPart)) {
@@ -108,6 +129,8 @@ router.post('/inbox/create', async (req, res) => {
                 });
             }
         }
+
+        if (!(await requirePublicInbox(res, `${localPart}@${domain.domain}`))) return;
 
         const inbox = await inboxService.getOrCreateInbox(localPart, domainId);
 
@@ -138,6 +161,7 @@ router.get('/inbox/:address', async (req, res) => {
         if (!address.includes('@')) {
             return res.status(400).json({ success: false, error: 'Invalid email address format' });
         }
+        if (!(await requirePublicInbox(res, address))) return;
 
         const inbox = await inboxService.getInboxByAddress(address);
 
@@ -185,6 +209,7 @@ router.get('/inbox/:address/latest', async (req, res) => {
         if (!address.includes('@')) {
             return res.status(400).json({ success: false, error: 'Invalid email address format' });
         }
+        if (!(await requirePublicInbox(res, address))) return;
 
         const inbox = await inboxService.getInboxByAddress(address);
 
@@ -230,6 +255,7 @@ router.get('/inbox/:address/otp/latest', async (req, res) => {
         if (!address.includes('@')) {
             return res.status(400).json({ success: false, error: 'Invalid email address format' });
         }
+        if (!(await requirePublicInbox(res, address))) return;
 
         const inbox = await inboxService.getInboxByAddress(address);
 
@@ -270,6 +296,7 @@ router.get('/inbox/:address/otp', async (req, res) => {
         if (!address.includes('@')) {
             return res.status(400).json({ success: false, error: 'Invalid email address format' });
         }
+        if (!(await requirePublicInbox(res, address))) return;
 
         const inbox = await inboxService.getInboxByAddress(address);
 
@@ -330,6 +357,8 @@ router.get('/email/:id', async (req, res) => {
             return res.status(404).json({ success: false, error: 'Email not found' });
         }
 
+        if (!(await requirePublicInbox(res, `${email.local_part}@${email.domain}`))) return;
+
         res.json({
             success: true,
             data: {
@@ -356,6 +385,7 @@ router.get('/email/:id', async (req, res) => {
 router.delete('/inbox/:address', async (req, res) => {
     try {
         const { address } = req.params;
+        if (!(await requirePublicInbox(res, address))) return;
         const inbox = await inboxService.getInboxByAddress(address);
 
         if (!inbox) {

@@ -178,18 +178,31 @@ setup_database() {
     warn "Database schema already exists; skipping sql/schema.sql to avoid overwriting data."
   fi
 
-  # Always run high-concurrency migration (idempotent, no data loss):
-  # adds emails.otp_code + performance indexes. Safe on fresh + existing DBs.
-  if [ -f "$APP_DIR/sql/migrations/001_high_concurrency.sql" ]; then
-    log "Applying migration: 001_high_concurrency"
-    PGPASSWORD="$DB_PASS" psql -h localhost -U "$DB_USER" -d "$DB_NAME" -f "$APP_DIR/sql/migrations/001_high_concurrency.sql"
-  fi
+  # All migrations are idempotent and safe for both fresh and existing installs.
+  local migration
+  for migration in \
+    001_high_concurrency.sql \
+    002_protected_inboxes_and_domain_verification.sql \
+    003_reservation_management.sql \
+    004_protected_inbox_lifetime.sql; do
+    if [ -f "$APP_DIR/sql/migrations/$migration" ]; then
+      log "Applying migration: ${migration%.sql}"
+      PGPASSWORD="$DB_PASS" psql -h localhost -U "$DB_USER" -d "$DB_NAME" -f "$APP_DIR/sql/migrations/$migration"
+    fi
+  done
 
   local domain_values
   domain_values="$(csv_to_sql_values "$MAIL_DOMAINS")"
   if [ -n "$domain_values" ]; then
     PGPASSWORD="$DB_PASS" psql -h localhost -U "$DB_USER" -d "$DB_NAME" \
-      -c "INSERT INTO domains (domain) VALUES ${domain_values} ON CONFLICT (domain) DO UPDATE SET is_active = true;"
+      -c "INSERT INTO domains (domain, is_active, verification_status, verified_at)
+          SELECT configured.domain, true, 'active', NOW()
+          FROM (VALUES ${domain_values}) AS configured(domain)
+          ON CONFLICT (domain) DO UPDATE SET
+            is_active = true,
+            verification_status = 'active',
+            verified_at = COALESCE(domains.verified_at, NOW()),
+            sync_error = NULL;"
   fi
 
   tune_postgres_connections
@@ -240,11 +253,20 @@ DATABASE_URL=postgresql://${DB_USER}:${DB_PASS}@localhost:5432/${DB_NAME}
 PORT=${API_PORT}
 NODE_ENV=production
 JWT_SECRET=${JWT_SECRET}
+INBOX_ACCESS_JWT_SECRET=${INBOX_ACCESS_JWT_SECRET}
+INBOX_ACCESS_TOKEN_TTL=15m
+INBOX_UNLOCK_MAX_ATTEMPTS=5
+INBOX_UNLOCK_WINDOW_MS=900000
+PUBLIC_RESERVATION_MAX_PER_IP=${PUBLIC_RESERVATION_MAX_PER_IP}
+PUBLIC_RESERVATION_TTL_DAYS=${PUBLIC_RESERVATION_TTL_DAYS}
+INBOX_RESERVATION_IP_SALT=${INBOX_RESERVATION_IP_SALT}
 RATE_LIMIT_WINDOW_MS=60000
 RATE_LIMIT_MAX_REQUESTS=60
 POSTFIX_SYNC_ENABLED=${POSTFIX_SYNC_ENABLED}
 API_KEY=${API_KEY}
 API_RATE_LIMIT_MAX=${API_RATE_LIMIT_MAX}
+CORS_ALLOWED_ORIGINS=https://${WEB_DOMAIN},http://${WEB_DOMAIN}
+MAIL_SERVER_HOSTNAME=${WEB_DOMAIN}
 PG_POOL_MAX=${PG_POOL_MAX}
 PG_IDLE_TIMEOUT_MS=30000
 PG_CONNECTION_TIMEOUT_MS=10000
@@ -313,6 +335,11 @@ server {
 
     root ${APP_DIR}/frontend/dist;
     index index.html;
+
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header Permissions-Policy "camera=(), microphone=(), geolocation=()" always;
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https:; connect-src 'self'; frame-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'" always;
 
     location = /admin {
         try_files /admin.html =404;
@@ -430,11 +457,15 @@ main() {
   validate_identifier "PostgreSQL user" "$DB_USER"
   DB_PASS="$(prompt_secret "PostgreSQL password" "$(random_secret)")"
   JWT_SECRET="$(prompt_secret "JWT secret" "$(random_secret)")"
+  INBOX_ACCESS_JWT_SECRET="$(random_secret)"
+  INBOX_RESERVATION_IP_SALT="$(random_secret)"
   API_KEY="$(prompt_secret "External API key" "$(random_secret)")"
   API_PORT="$(prompt "Backend port" "$DEFAULT_API_PORT")"
   PM2_INSTANCES="$(prompt "PM2 cluster instances (number or 'max')" "$DEFAULT_PM2_INSTANCES")"
   API_RATE_LIMIT_MAX="$(prompt "External API rate limit (req/min per key)" "5000")"
   PG_POOL_MAX="$(prompt "PostgreSQL pool size per worker" "$DEFAULT_PG_POOL_MAX")"
+  PUBLIC_RESERVATION_MAX_PER_IP="$(prompt "Max public protected inboxes per network" "5")"
+  PUBLIC_RESERVATION_TTL_DAYS="$(prompt "Public protected inbox lifetime in days" "7")"
   ADMIN_USER="$(prompt "Admin username, empty to skip" "admin")"
   ADMIN_PASS="$(prompt_secret "Admin password, empty to skip" "$(random_secret)")"
   LETSENCRYPT_EMAIL="$(prompt "Let's Encrypt email, empty allowed" "")"

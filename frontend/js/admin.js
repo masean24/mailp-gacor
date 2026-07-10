@@ -7,6 +7,8 @@ const API_BASE = '/api';
 
 // State
 let authToken = null;
+let allDomains = [];
+let reservationSearchTimer = null;
 
 // DOM Elements
 const elements = {
@@ -24,11 +26,30 @@ const elements = {
     statInboxes: document.getElementById('stat-inboxes'),
     statExpired: document.getElementById('stat-expired'),
     domainsTable: document.getElementById('domains-table'),
+    reservationsTable: document.getElementById('reservations-table'),
+    reserveInboxForm: document.getElementById('reserve-inbox-form'),
+    reserveInboxLocal: document.getElementById('reserve-inbox-local'),
+    reserveInboxDomain: document.getElementById('reserve-inbox-domain'),
+    reserveInboxPassword: document.getElementById('reserve-inbox-password'),
+    reserveInboxExpiry: document.getElementById('reserve-inbox-expiry'),
+    reserveInboxExisting: document.getElementById('reserve-inbox-existing'),
+    reservationsSearch: document.getElementById('reservations-search'),
+    reservationsStatus: document.getElementById('reservations-status'),
+    reservationsSource: document.getElementById('reservations-source'),
+    reservationAuditTable: document.getElementById('reservation-audit-table'),
+    reservationStatTotal: document.getElementById('reservation-stat-total'),
+    reservationStatActive: document.getElementById('reservation-stat-active'),
+    reservationStatPublic: document.getElementById('reservation-stat-public'),
+    reservationStatFailed: document.getElementById('reservation-stat-failed'),
     recentEmailsTable: document.getElementById('recent-emails-table'),
     domainModal: document.getElementById('domain-modal'),
     domainModalClose: document.getElementById('domain-modal-close'),
     addDomainForm: document.getElementById('add-domain-form'),
     newDomainInput: document.getElementById('new-domain'),
+    domainSetupModal: document.getElementById('domain-setup-modal'),
+    domainSetupModalClose: document.getElementById('domain-setup-modal-close'),
+    domainSetupTxt: document.getElementById('domain-setup-txt'),
+    domainSetupMx: document.getElementById('domain-setup-mx'),
     toastContainer: document.getElementById('toast-container'),
     // Names management
     namesGrid: document.getElementById('names-grid'),
@@ -65,6 +86,7 @@ function showToast(message, type = 'success') {
 }
 
 function formatDate(dateString) {
+    if (!dateString) return '-';
     return new Date(dateString).toLocaleString('id-ID', {
         day: 'numeric',
         month: 'short',
@@ -152,7 +174,12 @@ async function fetchDomains() {
         const data = await res.json();
 
         if (data.success) {
+            allDomains = data.data;
             renderDomainsTable(data.data);
+            const activeDomains = data.data.filter((domain) => domain.is_active && domain.verification_status === 'active');
+            elements.reserveInboxDomain.innerHTML = activeDomains
+                .map((domain) => `<option value="${domain.id}">${escapeHtml(domain.domain)}</option>`)
+                .join('');
         }
     } catch (error) {
         console.error('Error fetching domains:', error);
@@ -169,9 +196,9 @@ async function addDomain(domain) {
         const data = await res.json();
 
         if (data.success) {
-            showToast('Domain added!', 'success');
-            if (data.postfixSyncWarning) showToast(data.postfixSyncWarning, 'warning');
+            showToast('Domain dibuat. Lanjutkan verifikasi DNS.', 'success');
             hideDomainModal();
+            showDomainSetup(data.setup);
             fetchDomains();
         } else {
             showToast(data.error || 'Failed to add domain', 'error');
@@ -179,6 +206,153 @@ async function addDomain(domain) {
     } catch (error) {
         console.error('Error adding domain:', error);
         showToast('Failed to add domain', 'error');
+    }
+}
+
+async function fetchReservations() {
+    try {
+        const params = new URLSearchParams();
+        if (elements.reservationsSearch?.value.trim()) params.set('search', elements.reservationsSearch.value.trim());
+        if (elements.reservationsStatus?.value) params.set('status', elements.reservationsStatus.value);
+        if (elements.reservationsSource?.value) params.set('source', elements.reservationsSource.value);
+        const query = params.toString() ? `?${params}` : '';
+        const res = await fetch(`${API_BASE}/admin/inbox-reservations${query}`, { headers: getAuthHeaders() });
+        const data = await res.json();
+        if (data.success) renderReservations(data.data);
+    } catch (error) {
+        console.error('Error fetching inbox reservations:', error);
+    }
+}
+
+async function fetchReservationStats() {
+    try {
+        const res = await fetch(`${API_BASE}/admin/inbox-reservations/stats`, { headers: getAuthHeaders() });
+        const data = await res.json();
+        if (!data.success) return;
+        elements.reservationStatTotal.textContent = data.data.total;
+        elements.reservationStatActive.textContent = data.data.active;
+        elements.reservationStatPublic.textContent = data.data.public_count;
+        elements.reservationStatFailed.textContent = data.data.failedUnlocks24h;
+    } catch (error) {
+        console.error('Error fetching reservation stats:', error);
+    }
+}
+
+async function fetchReservationAudit() {
+    try {
+        const res = await fetch(`${API_BASE}/admin/inbox-reservations/audit?limit=30`, { headers: getAuthHeaders() });
+        const data = await res.json();
+        if (data.success) renderReservationAudit(data.data);
+    } catch (error) {
+        console.error('Error fetching reservation audit:', error);
+    }
+}
+
+async function reserveInbox(localPart, domainId, password, expiresInDays, protectExistingInbox = false) {
+    try {
+        const res = await fetch(`${API_BASE}/admin/inbox-reservations`, {
+            method: 'POST',
+            headers: getAuthHeaders(),
+            body: JSON.stringify({ localPart, domainId, password, expiresInDays, protectExistingInbox }),
+        });
+        const data = await res.json();
+        if (!data.success) return showToast(data.error || 'Gagal mereservasi inbox', 'error');
+        const message = data.data.convertedExistingInbox
+            ? `${data.data.email} berhasil dikunci; ${data.data.preservedEmails} email lama dipertahankan.`
+            : `Inbox ${data.data.email} berhasil di-reserve`;
+        showToast(message, 'success');
+        elements.reserveInboxForm.reset();
+        refreshReservationManagement();
+    } catch (error) {
+        console.error('Error reserving inbox:', error);
+        showToast('Gagal mereservasi inbox', 'error');
+    }
+}
+
+async function patchReservation(id, payload, successMessage) {
+    const res = await fetch(`${API_BASE}/admin/inbox-reservations/${id}`, {
+        method: 'PATCH',
+        headers: getAuthHeaders(),
+        body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error || 'Failed to update reservation');
+    showToast(successMessage, 'success');
+    refreshReservationManagement();
+}
+
+async function resetReservationPassword(id, email) {
+    const password = prompt(`Password baru untuk ${email} (minimal 10 karakter):`);
+    if (password === null) return;
+    if (password.length < 10) return showToast('Password minimal 10 karakter', 'error');
+    try {
+        await patchReservation(id, { password }, `Password ${email} berhasil diganti. Semua sesi lama dicabut.`);
+    } catch (error) {
+        showToast(error.message, 'error');
+    }
+}
+
+async function toggleReservation(id, isActive, email) {
+    try {
+        await patchReservation(id, { isActive }, `${email} ${isActive ? 'diaktifkan' : 'dikunci'}.`);
+    } catch (error) {
+        showToast(error.message, 'error');
+    }
+}
+
+async function clearProtectedInbox(id, email) {
+    if (!confirm(`Hapus seluruh email di ${email}? Reservation dan password tetap aktif.`)) return;
+    try {
+        const res = await fetch(`${API_BASE}/admin/inbox-reservations/${id}/inbox`, {
+            method: 'DELETE', headers: getAuthHeaders(),
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || 'Failed to clear inbox');
+        showToast(data.message, 'success');
+        refreshReservationManagement();
+    } catch (error) {
+        showToast(error.message, 'error');
+    }
+}
+
+async function releaseReservation(id, email) {
+    if (!confirm(`RELEASE ${email}? Isi protected inbox akan dihapus dan alamat kembali bisa dipakai publik.`)) return;
+    if (!confirm(`Konfirmasi terakhir: benar-benar release ${email}?`)) return;
+    try {
+        const res = await fetch(`${API_BASE}/admin/inbox-reservations/${id}`, {
+            method: 'DELETE', headers: getAuthHeaders(),
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || 'Failed to release reservation');
+        showToast(data.message, 'success');
+        refreshReservationManagement();
+    } catch (error) {
+        showToast(error.message, 'error');
+    }
+}
+
+function refreshReservationManagement() {
+    fetchReservations();
+    fetchReservationStats();
+    fetchReservationAudit();
+}
+
+async function verifyDomain(id) {
+    try {
+        const res = await fetch(`${API_BASE}/admin/domains/${id}/verify`, {
+            method: 'POST',
+            headers: getAuthHeaders(),
+        });
+        const data = await res.json();
+        if (data.success) {
+            showToast('Domain verified dan aktif!', 'success');
+            fetchDomains();
+        } else {
+            showToast(data.error || 'Verifikasi domain gagal', 'error');
+        }
+    } catch (error) {
+        console.error('Error verifying domain:', error);
+        showToast('Verifikasi domain gagal', 'error');
     }
 }
 
@@ -270,15 +444,18 @@ function renderDomainsTable(domains) {
       <tr>
         <td><strong>${escapeHtml(d.domain)}</strong></td>
         <td>
-          <span class="badge ${d.is_active ? 'badge--success' : 'badge--danger'}">
-            ${d.is_active ? 'Active' : 'Inactive'}
+          <span class="badge ${d.verification_status === 'active' ? 'badge--success' : 'badge--danger'}">
+            ${escapeHtml((d.verification_status || (d.is_active ? 'active' : 'inactive')).replaceAll('_', ' '))}
           </span>
         </td>
         <td>${formatDate(d.created_at)}</td>
         <td>
-          <button class="btn btn--small ${d.is_active ? 'btn--yellow' : 'btn--green'}" onclick="toggleDomain(${d.id}, ${!d.is_active})">
-            ${d.is_active ? 'Disable' : 'Enable'}
-          </button>
+          ${d.is_active
+                ? `<button class="btn btn--small btn--yellow" onclick="toggleDomain(${d.id}, false)">Disable</button>`
+                : (['pending_verification', 'verified', 'sync_failed'].includes(d.verification_status) || (!d.verified_at && d.verification_token)
+                    ? `<button class="btn btn--small btn--green" onclick="verifyDomain(${d.id})">Verify</button>`
+                    : `<button class="btn btn--small btn--green" onclick="toggleDomain(${d.id}, true)">Enable</button>`)}
+          ${d.verification_token ? `<button class="btn btn--small" onclick="showDomainSetupById(${d.id})">DNS Guide</button>` : ''}
           <button class="btn btn--small btn--red" onclick="deleteDomain(${d.id})">Delete</button>
         </td>
       </tr>
@@ -290,7 +467,7 @@ function renderDomainsTable(domains) {
 function renderRecentEmailsTable(emails) {
     if (emails.length === 0) {
         elements.recentEmailsTable.innerHTML = `
-      <tr><td colspan="4" style="text-align: center;">No emails yet</td></tr>
+      <tr><td colspan="5" style="text-align: center;">No emails yet</td></tr>
     `;
         return;
     }
@@ -303,10 +480,30 @@ function renderRecentEmailsTable(emails) {
         <td>${escapeHtml(e.from)}</td>
         <td>${escapeHtml(e.subject)}</td>
         <td>${formatDate(e.receivedAt)}</td>
+        <td><button class="btn btn--small" data-protect-address="${escapeHtml(e.to)}">Protect</button></td>
       </tr>
     `
         )
         .join('');
+}
+
+function prepareProtectExistingInbox(address) {
+    const separatorIndex = address.lastIndexOf('@');
+    if (separatorIndex <= 0) return showToast('Alamat inbox tidak valid', 'error');
+
+    const localPart = address.slice(0, separatorIndex);
+    const domainName = address.slice(separatorIndex + 1).toLowerCase();
+    const domain = allDomains.find((item) => item.domain.toLowerCase() === domainName);
+    if (!domain || !domain.is_active || domain.verification_status !== 'active') {
+        return showToast('Domain inbox tidak aktif atau belum terverifikasi', 'error');
+    }
+
+    elements.reserveInboxLocal.value = localPart;
+    elements.reserveInboxDomain.value = String(domain.id);
+    elements.reserveInboxExisting.checked = true;
+    elements.reserveInboxForm.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    window.setTimeout(() => elements.reserveInboxPassword.focus(), 300);
+    showToast(`Siap melindungi ${address}. Masukkan password lalu submit.`, 'success');
 }
 
 function showDomainModal() {
@@ -317,6 +514,66 @@ function showDomainModal() {
 
 function hideDomainModal() {
     elements.domainModal.classList.remove('active');
+}
+
+function renderReservations(reservations) {
+    if (!reservations.length) {
+        elements.reservationsTable.innerHTML = '<tr><td colspan="7" style="text-align:center;">Belum ada protected inbox yang cocok</td></tr>';
+        return;
+    }
+    elements.reservationsTable.innerHTML = reservations.map((reservation) => `
+      <tr>
+        <td>${escapeHtml(reservation.email)}</td>
+        <td><span class="badge">${escapeHtml(reservation.source || 'public')}</span></td>
+        <td><span class="badge ${reservation.status === 'active' ? 'badge--success' : 'badge--danger'}">${escapeHtml(reservation.status)}</span></td>
+        <td>${reservation.emailCount || 0}</td>
+        <td>${reservation.expiresAt ? formatDate(reservation.expiresAt) : 'Permanent'}</td>
+        <td>${formatDate(reservation.lastAccessedAt || reservation.lastEmailAt)}</td>
+        <td>
+          <div style="display:flex;gap:0.35rem;flex-wrap:wrap;min-width:310px;">
+            <button class="btn btn--small" onclick="resetReservationPassword(${reservation.id}, '${reservation.email}')">Reset/Take over</button>
+            <button class="btn btn--small ${reservation.isActive ? 'btn--yellow' : 'btn--green'}" onclick="toggleReservation(${reservation.id}, ${!reservation.isActive}, '${reservation.email}')">${reservation.isActive ? 'Disable' : 'Enable'}</button>
+            <button class="btn btn--small btn--red" onclick="clearProtectedInbox(${reservation.id}, '${reservation.email}')">Clear Inbox</button>
+            <button class="btn btn--small btn--red" onclick="releaseReservation(${reservation.id}, '${reservation.email}')">Release</button>
+          </div>
+        </td>
+      </tr>
+    `).join('');
+}
+
+function renderReservationAudit(items) {
+    if (!items.length) {
+        elements.reservationAuditTable.innerHTML = '<tr><td colspan="4" style="text-align:center;">Belum ada audit event</td></tr>';
+        return;
+    }
+    elements.reservationAuditTable.innerHTML = items.map((item) => `
+      <tr>
+        <td>${formatDate(item.created_at)}</td>
+        <td>${escapeHtml(item.address)}</td>
+        <td>${escapeHtml(item.action.replaceAll('_', ' '))}</td>
+        <td>${escapeHtml(item.actor_type)}</td>
+      </tr>
+    `).join('');
+}
+
+function showDomainSetup(setup) {
+    if (!setup) return;
+    elements.domainSetupTxt.textContent = `TXT @  ${setup.txt.value}`;
+    elements.domainSetupMx.textContent = `MX @  ${setup.mx.value}  priority ${setup.mx.priority}`;
+    elements.domainSetupModal.classList.add('active');
+}
+
+function hideDomainSetup() {
+    elements.domainSetupModal.classList.remove('active');
+}
+
+function showDomainSetupById(id) {
+    const domain = allDomains.find((item) => item.id === id);
+    if (!domain?.verification_token) return;
+    showDomainSetup({
+        txt: { value: `hubify-mail-verification=${domain.verification_token}` },
+        mx: { value: 'mail.hubify.store', priority: 10 },
+    });
 }
 
 function escapeHtml(text) {
@@ -330,6 +587,7 @@ function loadDashboardData() {
     fetchDomains();
     fetchNames();
     fetchRecentEmails();
+    refreshReservationManagement();
 }
 
 // ============================
@@ -588,6 +846,12 @@ function hideNameModal() {
 // Make functions available globally for inline handlers
 window.toggleDomain = toggleDomain;
 window.deleteDomain = deleteDomain;
+window.verifyDomain = verifyDomain;
+window.showDomainSetupById = showDomainSetupById;
+window.resetReservationPassword = resetReservationPassword;
+window.toggleReservation = toggleReservation;
+window.clearProtectedInbox = clearProtectedInbox;
+window.releaseReservation = releaseReservation;
 window.toggleName = toggleName;
 window.deleteName = deleteName;
 
@@ -611,11 +875,16 @@ elements.btnRefreshStats.addEventListener('click', () => {
 elements.btnAddDomain.addEventListener('click', showDomainModal);
 
 elements.domainModalClose.addEventListener('click', hideDomainModal);
+elements.domainSetupModalClose.addEventListener('click', hideDomainSetup);
 
 elements.domainModal.addEventListener('click', (e) => {
     if (e.target === elements.domainModal) {
         hideDomainModal();
     }
+});
+
+elements.domainSetupModal.addEventListener('click', (e) => {
+    if (e.target === elements.domainSetupModal) hideDomainSetup();
 });
 
 elements.addDomainForm.addEventListener('submit', (e) => {
@@ -624,6 +893,37 @@ elements.addDomainForm.addEventListener('submit', (e) => {
     if (domain) {
         addDomain(domain);
     }
+});
+
+elements.reserveInboxForm.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const localPart = elements.reserveInboxLocal.value.trim();
+    const domainId = parseInt(elements.reserveInboxDomain.value, 10);
+    const password = elements.reserveInboxPassword.value;
+    const expiresInDays = elements.reserveInboxExpiry.value
+        ? parseInt(elements.reserveInboxExpiry.value, 10)
+        : null;
+    const protectExistingInbox = elements.reserveInboxExisting.checked;
+    if (protectExistingInbox) {
+        const domain = allDomains.find((item) => item.id === domainId)?.domain || '';
+        const address = `${localPart}@${domain}`;
+        if (!confirm(`Protect inbox lama ${address}? Semua pesan dipertahankan dan akses publik langsung dikunci.`)) return;
+    }
+    if (localPart && domainId && password) {
+        reserveInbox(localPart, domainId, password, expiresInDays, protectExistingInbox);
+    }
+});
+
+elements.reservationsSearch.addEventListener('input', () => {
+    clearTimeout(reservationSearchTimer);
+    reservationSearchTimer = setTimeout(fetchReservations, 250);
+});
+elements.reservationsStatus.addEventListener('change', fetchReservations);
+elements.reservationsSource.addEventListener('change', fetchReservations);
+
+elements.recentEmailsTable.addEventListener('click', (e) => {
+    const button = e.target.closest('[data-protect-address]');
+    if (button) prepareProtectExistingInbox(button.dataset.protectAddress);
 });
 
 elements.btnCleanup.addEventListener('click', () => {
@@ -635,6 +935,7 @@ elements.btnCleanup.addEventListener('click', () => {
 document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
         hideDomainModal();
+        hideDomainSetup();
         hideNameModal();
         hideBulkModal();
     }

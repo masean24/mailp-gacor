@@ -14,9 +14,29 @@ dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const configuredOrigins = (process.env.CORS_ALLOWED_ORIGINS || '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+const allowedOrigins = configuredOrigins.length > 0
+    ? configuredOrigins
+    : (process.env.NODE_ENV === 'production' ? [] : ['http://localhost:5173']);
 
 // Middleware
-app.use(cors());
+app.set('trust proxy', 1);
+app.use(cors({
+    origin(origin, callback) {
+        // Same-origin server requests and API clients have no Origin header.
+        if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
+        return callback(new Error('Origin not allowed by CORS'));
+    },
+}));
+app.use((req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'same-origin');
+    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+    next();
+});
 app.use(express.json());
 
 // Routes
@@ -67,7 +87,9 @@ app.use((err, req, res, next) => {
 cron.schedule('0 * * * *', async () => {
     console.log('🧹 Running scheduled cleanup...');
     try {
+        const releasedReservations = await cleanupService.cleanupExpiredReservations();
         const deletedCount = await cleanupService.cleanupExpiredInboxes();
+        console.log(`Released ${releasedReservations} expired reservations.`);
         console.log(`🧹 Cleanup completed. Deleted ${deletedCount} expired inboxes.`);
     } catch (error) {
         console.error('❌ Cleanup failed:', error);

@@ -1,5 +1,12 @@
 # Domain Management Guide
 
+> **Update keamanan:** domain baru sekarang dibuat dalam status `pending_verification`.
+> Tambahkan TXT `hubify-mail-verification=<token-yang-ditampilkan-panel>` dan
+> MX ke `mail.hubify.store`, lalu klik **Verify** di Admin Dashboard. Domain
+> hanya muncul di dropdown dan diterima Postfix setelah TXT valid dan sync
+> Postfix berhasil. Domain lama yang sudah ada tetap aktif setelah menjalankan
+> migrasi `002_protected_inboxes_and_domain_verification.sql`.
+
 Panduan lengkap untuk menambah dan mengelola domain di Hubify Mail.
 
 ## Cara Menambah Domain Baru

@@ -152,6 +152,60 @@
                 </div>
             </section>
 
+            <!-- Protected Inbox Reservation -->
+            <section class="admin-section">
+                <div class="admin-section__header">
+                    <h2 class="admin-section__title">PROTECTED INBOX</h2>
+                </div>
+                <form id="reserve-inbox-form" style="display:flex; gap:0.75rem; flex-wrap:wrap; margin-bottom:1rem;">
+                    <input type="text" class="input" id="reserve-inbox-local" placeholder="username" pattern="[a-zA-Z0-9._-]+" required style="flex:1; min-width:150px;">
+                    <select class="select" id="reserve-inbox-domain" required style="flex:1; min-width:160px;"></select>
+                    <input type="password" class="input" id="reserve-inbox-password" placeholder="Password (min. 10 karakter)" minlength="10" required autocomplete="new-password" style="flex:1; min-width:200px;">
+                    <select class="select" id="reserve-inbox-expiry" style="min-width:150px;">
+                        <option value="">Permanent</option>
+                        <option value="7">7 days</option>
+                        <option value="30">30 days</option>
+                        <option value="90">90 days</option>
+                    </select>
+                    <button type="submit" class="btn btn--primary">Reserve</button>
+                    <label style="display:flex;align-items:center;gap:0.5rem;flex-basis:100%;font-size:0.9rem;color:var(--text-secondary);cursor:pointer;">
+                        <input type="checkbox" id="reserve-inbox-existing">
+                        Protect inbox yang sudah ada dan pertahankan seluruh pesan lamanya
+                    </label>
+                </form>
+                <p style="font-size:0.85rem; color:var(--text-secondary); margin-bottom:0.75rem;">Centang opsi protect existing hanya untuk mengambil alih inbox lama yang sah. Setelah dikunci, password tetap diperlukan untuk membaca email/OTP, termasuk oleh admin.</p>
+                <div class="reservation-stats" style="display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:0.65rem; margin-bottom:0.9rem;">
+                    <div class="card" style="padding:0.8rem;"><strong id="reservation-stat-total">-</strong><small style="display:block;color:var(--text-secondary);">Total</small></div>
+                    <div class="card" style="padding:0.8rem;"><strong id="reservation-stat-active">-</strong><small style="display:block;color:var(--text-secondary);">Active</small></div>
+                    <div class="card" style="padding:0.8rem;"><strong id="reservation-stat-public">-</strong><small style="display:block;color:var(--text-secondary);">Public-created</small></div>
+                    <div class="card" style="padding:0.8rem;"><strong id="reservation-stat-failed">-</strong><small style="display:block;color:var(--text-secondary);">Failed unlocks / 24h</small></div>
+                </div>
+                <div style="display:flex; gap:0.65rem; flex-wrap:wrap; margin-bottom:0.75rem;">
+                    <input type="search" class="input" id="reservations-search" placeholder="Search protected email..." style="flex:2;min-width:190px;">
+                    <select class="select" id="reservations-status" style="min-width:130px;">
+                        <option value="">All status</option><option value="active">Active</option><option value="disabled">Disabled</option><option value="expired">Expired</option>
+                    </select>
+                    <select class="select" id="reservations-source" style="min-width:130px;">
+                        <option value="">All sources</option><option value="public">Public</option><option value="admin">Admin</option>
+                    </select>
+                </div>
+                <div class="table-container">
+                    <table class="table--compact">
+                        <thead><tr><th>Email</th><th>Source</th><th>Status</th><th>Emails</th><th>Expires</th><th>Last activity</th><th>Actions</th></tr></thead>
+                        <tbody id="reservations-table"></tbody>
+                    </table>
+                </div>
+                <details style="margin-top:1rem;">
+                    <summary style="cursor:pointer;font-weight:700;">Recent reservation audit</summary>
+                    <div class="table-container" style="margin-top:0.65rem;">
+                        <table class="table--compact">
+                            <thead><tr><th>Time</th><th>Email</th><th>Action</th><th>Actor</th></tr></thead>
+                            <tbody id="reservation-audit-table"></tbody>
+                        </table>
+                    </div>
+                </details>
+            </section>
+
             <!-- Names Management -->
             <section class="admin-section">
                 <div class="admin-section__header">
@@ -223,6 +277,7 @@
                                 <th>From</th>
                                 <th>Subject</th>
                                 <th>Received</th>
+                                <th>Action</th>
                             </tr>
                         </thead>
                         <tbody id="recent-emails-table"></tbody>
@@ -275,6 +330,27 @@
 
                     <button type="submit" class="btn btn--primary" style="width: 100%;">Add Domain</button>
                 </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Domain verification guide shown after a pending domain is created. -->
+    <div class="modal" id="domain-setup-modal">
+        <div class="modal__content" style="max-width: 560px;">
+            <div class="modal__header">
+                <h3 class="modal__title">Connect Your Domain</h3>
+                <button class="modal__close" id="domain-setup-modal-close">×</button>
+            </div>
+            <div class="modal__body" style="background-color: var(--card-bg); color: var(--text-primary);">
+                <p style="margin-bottom: 1rem; color: var(--text-secondary);">Tambahkan record berikut di DNS provider Anda. Setelah record TXT terdeteksi, klik <strong>Verify</strong> pada tabel domain.</p>
+                <div class="info-banner" style="display:block; margin-bottom: 0.8rem;">
+                    <strong>1. Verifikasi kepemilikan (TXT)</strong>
+                    <p style="margin-top:0.4rem; word-break:break-all;"><code id="domain-setup-txt"></code></p>
+                </div>
+                <div class="info-banner" style="display:block;">
+                    <strong>2. Terima email (MX)</strong>
+                    <p style="margin-top:0.4rem; word-break:break-all;"><code id="domain-setup-mx"></code></p>
+                </div>
             </div>
         </div>
     </div>

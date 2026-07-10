@@ -4,6 +4,15 @@
 > **Auth:** Header `X-API-Key: YOUR_API_KEY`  
 > **Rate Limit:** 5000 req/menit (per API key, configurable)
 
+> **Protected inbox:** external API tetap untuk create dan OTP inbox publik.
+> Jika alamat di-reserve dengan password, semua endpoint baca/hapus external
+> API membalas `423 Locked` tanpa data email/OTP. `X-API-Key` tidak menjadi
+> bypass password tersebut.
+
+> **Domain baru:** `POST /api/ext/domains` membuat domain berstatus pending
+> dan mengembalikan instruksi TXT/MX. Verifikasi DNS serta aktivasi Postfix
+> dilakukan dari Admin Dashboard sebelum domain dapat digunakan.
+
 Semua response pakai format:
 ```json
 { "success": true, "data": { ... } }

@@ -101,6 +101,8 @@ node scripts/create-admin.js admin yourpassword
 | GET | /api/domains | List active domains |
 | POST | /api/inbox/generate | Generate random email |
 | POST | /api/inbox/custom | Create custom email |
+| POST | /api/inbox/reserve | Create password-protected email (public quota applies) |
+| POST | /api/inbox/:address/unlock | Unlock a protected inbox |
 | GET | /api/inbox/:address | Get inbox emails |
 | GET | /api/email/:id | Get email detail |
 | DELETE | /api/inbox/:address | Delete inbox |
@@ -115,6 +117,10 @@ node scripts/create-admin.js admin yourpassword
 | PATCH/DELETE | /api/admin/domains/:id | Update/delete domain |
 | GET | /api/admin/emails/recent | Recent emails |
 | POST | /api/admin/cleanup | Trigger cleanup |
+| GET/POST | /api/admin/inbox-reservations | List/create protected inboxes; admin dapat melindungi inbox lama dengan `protectExistingInbox: true` |
+| PATCH | /api/admin/inbox-reservations/:id | Reset password or enable/disable |
+| DELETE | /api/admin/inbox-reservations/:id/inbox | Clear protected inbox contents |
+| DELETE | /api/admin/inbox-reservations/:id | Release reservation safely |
 
 ## Production Deployment
 

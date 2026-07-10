@@ -24,7 +24,9 @@ async function main() {
         console.log(`   - Total emails: ${statsBefore.totalEmails}`);
 
         // Run cleanup
+        const releasedReservations = await cleanupService.cleanupExpiredReservations();
         const deletedCount = await cleanupService.cleanupExpiredInboxes();
+        console.log(`Released ${releasedReservations} expired reservations`);
         console.log(`✅ Deleted ${deletedCount} expired inboxes`);
 
         // Get stats after cleanup

@@ -6,6 +6,7 @@ import inboxService from '../services/inbox.js';
 import cleanupService from '../services/cleanup.js';
 import namesService from '../services/names.js';
 import postfixSync from '../services/postfixSync.js';
+import inboxAccessService from '../services/inboxAccess.js';
 
 const router = Router();
 
@@ -140,8 +141,7 @@ router.post('/domains', async (req, res) => {
             });
         }
 
-        // Validate domain format
-        if (!/^[a-zA-Z0-9][a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(domain)) {
+        if (!domainService.DOMAIN_PATTERN.test(domain)) {
             return res.status(400).json({
                 success: false,
                 error: 'Invalid domain format',
@@ -158,20 +158,58 @@ router.post('/domains', async (req, res) => {
         }
 
         const newDomain = await domainService.createDomain(domain);
-
-        const syncResult = await postfixSync.syncPostfix();
-        const payload = { success: true, data: newDomain };
-        if (!syncResult.success && !syncResult.skipped) {
-            payload.postfixSyncWarning = syncResult.error || 'Postfix config was not updated. Update virtual_mailbox_domains on the VPS manually.';
-        }
-
-        res.status(201).json(payload);
+        res.status(201).json({
+            success: true,
+            data: newDomain,
+            setup: domainService.getVerificationInstructions(newDomain),
+            message: 'Add the TXT and MX records, then verify this domain before it can receive email.',
+        });
     } catch (error) {
         console.error('Error creating domain:', error);
         res.status(500).json({
             success: false,
             error: 'Failed to create domain',
         });
+    }
+});
+
+/** Verify DNS ownership, then sync Postfix and activate the domain. */
+router.post('/domains/:id/verify', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const existing = await domainService.getDomainById(id);
+        if (!existing) return res.status(404).json({ success: false, error: 'Domain not found' });
+
+        const verified = await domainService.verifyDomainDns(id);
+        const activated = await domainService.activateVerifiedDomain(id);
+        if (!activated) {
+            return res.status(409).json({ success: false, error: 'Domain is not ready to be activated' });
+        }
+
+        const syncResult = await postfixSync.syncPostfix();
+        if (!syncResult.success || syncResult.skipped) {
+            const failedDomain = await domainService.markDomainSyncFailed(
+                id,
+                syncResult.error || 'Postfix sync is disabled'
+            );
+            return res.status(502).json({
+                success: false,
+                error: 'DNS was verified, but Postfix was not updated. Enable POSTFIX_SYNC_ENABLED before activating this domain.',
+                data: failedDomain,
+            });
+        }
+
+        res.json({
+            success: true,
+            data: activated,
+            setup: domainService.getVerificationInstructions(verified),
+            message: 'Domain verified and activated for incoming email.',
+        });
+    } catch (error) {
+        const status = ['TXT_NOT_FOUND', 'NO_VERIFICATION_TOKEN'].includes(error.code) ? 400
+            : error.code === 'DOMAIN_NOT_FOUND' ? 404 : 500;
+        if (status === 500) console.error('Error verifying domain:', error);
+        res.status(status).json({ success: false, error: error.message || 'Failed to verify domain' });
     }
 });
 
@@ -192,15 +230,32 @@ router.patch('/domains/:id', async (req, res) => {
             });
         }
 
-        const updated = await domainService.updateDomain(id, { domain, is_active });
-
-        const syncResult = await postfixSync.syncPostfix();
-        const payload = { success: true, data: updated };
-        if (!syncResult.success && !syncResult.skipped) {
-            payload.postfixSyncWarning = syncResult.error || 'Postfix config was not updated. Update virtual_mailbox_domains on the VPS manually.';
+        if (domain !== undefined) {
+            return res.status(400).json({ success: false, error: 'Domain names cannot be changed. Add and verify a new domain instead.' });
+        }
+        if (typeof is_active !== 'boolean') {
+            return res.status(400).json({ success: false, error: 'is_active must be a boolean' });
+        }
+        if (is_active && existing.verification_status === 'pending_verification') {
+            return res.status(409).json({ success: false, error: 'Verify the DNS TXT record before enabling this domain' });
         }
 
-        res.json(payload);
+        const updated = await domainService.updateDomain(id, { is_active });
+        if (!updated) return res.status(409).json({ success: false, error: 'Domain is not ready to be activated' });
+
+        const syncResult = await postfixSync.syncPostfix();
+        if (!syncResult.success || (is_active && syncResult.skipped)) {
+            const failedDomain = is_active
+                ? await domainService.markDomainSyncFailed(id, syncResult.error || 'Postfix sync is disabled')
+                : updated;
+            return res.status(502).json({
+                success: false,
+                error: 'Postfix config was not updated. The domain state was not activated.',
+                data: failedDomain,
+            });
+        }
+
+        res.json({ success: true, data: updated });
     } catch (error) {
         console.error('Error updating domain:', error);
         res.status(500).json({
@@ -272,18 +327,179 @@ router.get('/emails/recent', async (req, res) => {
     }
 });
 
+/** Admin manages reservations but never receives a read bypass. */
+router.get('/inbox-reservations', async (req, res) => {
+    try {
+        const reservations = await inboxAccessService.getAllReservations({
+            search: req.query.search,
+            status: req.query.status,
+            source: req.query.source,
+        });
+        res.json({
+            success: true,
+            data: reservations.map((reservation) => ({
+                id: reservation.id,
+                email: `${reservation.local_part}@${reservation.domain}`,
+                isActive: reservation.is_active,
+                status: reservation.expires_at && new Date(reservation.expires_at) <= new Date()
+                    ? 'expired' : (reservation.is_active ? 'active' : 'disabled'),
+                source: reservation.created_by,
+                emailCount: reservation.email_count,
+                expiresAt: reservation.expires_at,
+                lastAccessedAt: reservation.last_accessed_at,
+                lastEmailAt: reservation.last_email_at,
+                createdAt: reservation.created_at,
+                updatedAt: reservation.updated_at,
+            })),
+        });
+    } catch (error) {
+        console.error('Error fetching inbox reservations:', error);
+        res.status(500).json({ success: false, error: 'Failed to fetch inbox reservations' });
+    }
+});
+
+router.get('/inbox-reservations/stats', async (req, res) => {
+    try {
+        res.json({ success: true, data: await inboxAccessService.getReservationStats() });
+    } catch (error) {
+        console.error('Error fetching reservation stats:', error);
+        res.status(500).json({ success: false, error: 'Failed to fetch reservation statistics' });
+    }
+});
+
+router.get('/inbox-reservations/audit', async (req, res) => {
+    try {
+        res.json({ success: true, data: await inboxAccessService.getAuditLog({ limit: req.query.limit }) });
+    } catch (error) {
+        console.error('Error fetching reservation audit:', error);
+        res.status(500).json({ success: false, error: 'Failed to fetch reservation audit' });
+    }
+});
+
+router.post('/inbox-reservations', async (req, res) => {
+    try {
+        const {
+            localPart,
+            domainId,
+            password,
+            expiresInDays = null,
+            protectExistingInbox = false,
+        } = req.body;
+        if (!localPart || !domainId || !password) {
+            return res.status(400).json({ success: false, error: 'localPart, domainId, and password are required' });
+        }
+        if (!/^[a-zA-Z0-9._-]+$/.test(localPart)) {
+            return res.status(400).json({ success: false, error: 'Invalid local part' });
+        }
+        if (typeof password !== 'string' || password.length < 10 || password.length > 256) {
+            return res.status(400).json({ success: false, error: 'Password must be between 10 and 256 characters' });
+        }
+        if (typeof protectExistingInbox !== 'boolean') {
+            return res.status(400).json({ success: false, error: 'protectExistingInbox must be a boolean' });
+        }
+
+        if (expiresInDays !== null && (!Number.isInteger(Number(expiresInDays)) || Number(expiresInDays) < 1 || Number(expiresInDays) > 3650)) {
+            return res.status(400).json({ success: false, error: 'expiresInDays must be null or between 1 and 3650' });
+        }
+
+        const { inbox, reservation, convertedExistingInbox, preservedEmails } = await inboxAccessService.reserveAddress({
+            localPart,
+            domainId,
+            password,
+            actorType: 'admin',
+            actorAdminId: req.admin.id,
+            expiresInDays,
+            protectExistingInbox,
+        });
+        res.status(201).json({
+            success: true,
+            data: {
+                email: `${inbox.local_part}@${inbox.domain}`,
+                protected: true,
+                expiresAt: reservation.expires_at,
+                convertedExistingInbox,
+                preservedEmails,
+            },
+        });
+    } catch (error) {
+        const status = ['ALREADY_RESERVED', 'INBOX_HAS_EMAILS'].includes(error.code) ? 409
+            : error.code === 'EXISTING_INBOX_NOT_FOUND' ? 404
+                : ['DOMAIN_UNAVAILABLE', 'EXISTING_INBOX_FORBIDDEN'].includes(error.code) ? 400 : 500;
+        if (status === 500) console.error('Error creating inbox reservation:', error);
+        res.status(status).json({ success: false, error: error.message || 'Failed to reserve inbox' });
+    }
+});
+
+router.patch('/inbox-reservations/:id', async (req, res) => {
+    try {
+        const reservationId = parseInt(req.params.id, 10);
+        const { password, isActive } = req.body;
+        if (!reservationId || (password === undefined && isActive === undefined)) {
+            return res.status(400).json({ success: false, error: 'A password or isActive value is required' });
+        }
+        if (password !== undefined && (typeof password !== 'string' || password.length < 10 || password.length > 256)) {
+            return res.status(400).json({ success: false, error: 'Password must be between 10 and 256 characters' });
+        }
+        if (isActive !== undefined && typeof isActive !== 'boolean') {
+            return res.status(400).json({ success: false, error: 'isActive must be a boolean' });
+        }
+
+        const reservation = await inboxAccessService.updateReservation({
+            reservationId,
+            password,
+            isActive,
+            actorAdminId: req.admin.id,
+        });
+        if (!reservation) return res.status(404).json({ success: false, error: 'Reservation not found' });
+        res.json({ success: true, data: reservation });
+    } catch (error) {
+        console.error('Error updating inbox reservation:', error);
+        res.status(500).json({ success: false, error: 'Failed to update inbox reservation' });
+    }
+});
+
+router.delete('/inbox-reservations/:id/inbox', async (req, res) => {
+    try {
+        const result = await inboxAccessService.clearReservationInbox({
+            reservationId: parseInt(req.params.id, 10),
+            actorAdminId: req.admin.id,
+        });
+        if (!result) return res.status(404).json({ success: false, error: 'Reservation not found' });
+        res.json({ success: true, data: result, message: `Deleted ${result.deletedEmails} email(s); reservation remains protected.` });
+    } catch (error) {
+        console.error('Error clearing protected inbox:', error);
+        res.status(500).json({ success: false, error: 'Failed to clear protected inbox' });
+    }
+});
+
+router.delete('/inbox-reservations/:id', async (req, res) => {
+    try {
+        const result = await inboxAccessService.releaseReservation({
+            reservationId: parseInt(req.params.id, 10),
+            actorAdminId: req.admin.id,
+        });
+        if (!result) return res.status(404).json({ success: false, error: 'Reservation not found' });
+        res.json({ success: true, data: result, message: 'Reservation released and protected email content deleted.' });
+    } catch (error) {
+        console.error('Error releasing inbox reservation:', error);
+        res.status(500).json({ success: false, error: 'Failed to release reservation' });
+    }
+});
+
 /**
  * POST /api/admin/cleanup
  * Trigger manual cleanup
  */
 router.post('/cleanup', async (req, res) => {
     try {
+        const releasedReservations = await cleanupService.cleanupExpiredReservations();
         const deletedCount = await cleanupService.cleanupExpiredInboxes();
 
         res.json({
             success: true,
-            message: `Cleanup completed. Deleted ${deletedCount} expired inboxes.`,
+            message: `Cleanup completed. Released ${releasedReservations} reservations and deleted ${deletedCount} expired inboxes.`,
             deletedCount,
+            releasedReservations,
         });
     } catch (error) {
         console.error('Error during cleanup:', error);
@@ -485,4 +701,3 @@ router.post('/names/bulk', async (req, res) => {
 });
 
 export default router;
-

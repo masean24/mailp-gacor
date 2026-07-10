@@ -12,6 +12,7 @@ import inboxService from './inbox.js';
 import namesService from './names.js';
 import otpExtract from './otpExtract.js';
 import postfixSync from './postfixSync.js';
+import inboxAccessService from './inboxAccess.js';
 
 let bot = null;
 const OWNER_ID = process.env.TELEGRAM_OWNER_ID;
@@ -115,8 +116,7 @@ export async function startBot() {
                 return ctx.reply('⚠️ Format: `/adddomain domainbaru.com`', { parse_mode: 'Markdown' });
             }
 
-            // Validate domain format (same rule as admin API)
-            if (!/^[a-zA-Z0-9][a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(domain)) {
+            if (!domainService.DOMAIN_PATTERN.test(domain)) {
                 return ctx.reply('❌ Format domain tidak valid.', { parse_mode: 'Markdown' });
             }
 
@@ -127,6 +127,14 @@ export async function startBot() {
             }
 
             const newDomain = await domainService.createDomain(domain);
+            const setup = domainService.getVerificationInstructions(newDomain);
+            return ctx.reply(
+                `Domain pending verification: \`${newDomain.domain}\`\n` +
+                `TXT @ = \`${setup.txt.value}\`\n` +
+                `MX @ = \`${setup.mx.value}\` (priority ${setup.mx.priority})\n` +
+                `Verify it in the admin dashboard before using it.`,
+                { parse_mode: 'Markdown' }
+            );
             const syncResult = await postfixSync.syncPostfix();
 
             let msg = `✅ Domain ditambahkan!\n\n`;
@@ -277,6 +285,10 @@ export async function startBot() {
                 return ctx.reply('⚠️ Format: `/inbox email@domain.com`', { parse_mode: 'Markdown' });
             }
 
+            if (await inboxAccessService.isAddressProtected(address)) {
+                return ctx.reply('Protected inboxes cannot be accessed through Telegram.');
+            }
+
             const inbox = await inboxService.getInboxByAddress(address);
             if (!inbox) {
                 return ctx.reply(`📭 Inbox \`${address}\` kosong atau belum ada email.`, { parse_mode: 'Markdown' });
@@ -316,6 +328,10 @@ export async function startBot() {
                 return ctx.reply('⚠️ Format: `/otp email@domain.com`', { parse_mode: 'Markdown' });
             }
 
+            if (await inboxAccessService.isAddressProtected(address)) {
+                return ctx.reply('Protected inboxes cannot be accessed through Telegram.');
+            }
+
             const inbox = await inboxService.getInboxByAddress(address);
             if (!inbox) {
                 return ctx.reply(`📭 Inbox \`${address}\` kosong.`, { parse_mode: 'Markdown' });
@@ -352,6 +368,10 @@ export async function startBot() {
             const address = ctx.message.text.split(' ')[1];
             if (!address || !address.includes('@')) {
                 return ctx.reply('⚠️ Format: `/del email@domain.com`', { parse_mode: 'Markdown' });
+            }
+
+            if (await inboxAccessService.isAddressProtected(address)) {
+                return ctx.reply('Protected inboxes cannot be deleted through Telegram.');
             }
 
             const inbox = await inboxService.getInboxByAddress(address);

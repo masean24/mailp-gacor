@@ -38,6 +38,14 @@ const state = {
     searchTimeout: null,
   },
 
+  // Protected inbox access tokens intentionally live only in memory. They are
+  // never persisted in localStorage or included in a URL.
+  inboxAccessTokens: new Map(),
+  unlock: {
+    address: null,
+    onSuccess: null,
+  },
+
   // Audio Context for Notifications
   audioContext: null,
 };
@@ -61,6 +69,11 @@ const el = {
   modalTo: document.getElementById('modal-to'),
   modalDate: document.getElementById('modal-date'),
   modalBody: document.getElementById('modal-body'),
+  unlockModal: document.getElementById('inbox-unlock-modal'),
+  unlockClose: document.getElementById('inbox-unlock-close'),
+  unlockAddress: document.getElementById('inbox-unlock-address'),
+  unlockForm: document.getElementById('inbox-unlock-form'),
+  unlockPassword: document.getElementById('inbox-unlock-password'),
 
   // Generator Tab Elements
   genEmailDisplay: document.getElementById('gen-email-display'),
@@ -72,6 +85,8 @@ const el = {
   genCustomForm: document.getElementById('gen-custom-form'),
   genCustomLocal: document.getElementById('gen-custom-local'),
   genCustomDomain: document.getElementById('gen-custom-domain'),
+  genCustomProtect: document.getElementById('gen-custom-protect'),
+  genCustomPassword: document.getElementById('gen-custom-password'),
   genTtlText: document.getElementById('gen-ttl-text'),
   genStatusDot: document.getElementById('gen-status-dot'),
   genBtnNotification: document.getElementById('gen-btn-notification'),
@@ -93,6 +108,47 @@ const el = {
   otpRefreshBarFill: document.getElementById('otp-refresh-bar-fill'),
   otpRefreshCountdown: document.getElementById('otp-refresh-countdown'),
 };
+
+function inboxHeaders(address, headers = {}) {
+  const token = state.inboxAccessTokens.get(String(address || '').toLowerCase());
+  return token ? { ...headers, 'X-Inbox-Access': token } : headers;
+}
+
+function closeUnlockModal() {
+  state.unlock.address = null;
+  state.unlock.onSuccess = null;
+  if (el.unlockModal) el.unlockModal.classList.remove('active');
+  if (el.unlockPassword) el.unlockPassword.value = '';
+}
+
+function promptInboxUnlock(address, onSuccess) {
+  if (!el.unlockModal || !address) return;
+  state.unlock.address = address;
+  state.unlock.onSuccess = onSuccess;
+  if (el.unlockAddress) el.unlockAddress.textContent = address;
+  el.unlockModal.classList.add('active');
+  window.setTimeout(() => el.unlockPassword?.focus(), 0);
+}
+
+async function unlockInbox(address, password) {
+  const res = await fetch(`${API_BASE}/inbox/${encodeURIComponent(address)}/unlock`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password }),
+  });
+  const data = await res.json();
+  if (!data.success) throw new Error(data.error || 'Gagal membuka inbox');
+  state.inboxAccessTokens.set(address.toLowerCase(), data.data.accessToken);
+  return data.data;
+}
+
+function handleLockedInbox(res, data, address, onSuccess) {
+  if (res.status !== 423 || !data?.requiresPassword) return false;
+  stopGenPolling();
+  stopOtpPolling();
+  promptInboxUnlock(address, onSuccess);
+  return true;
+}
 
 // ── Audio Notification ────────────────────────────────────────────────────────
 function getAudioContext() {
@@ -261,8 +317,13 @@ function switchTab(tabName) {
 // ── Email Detail Modal ────────────────────────────────────────────────────────
 async function showEmailDetail(emailId) {
   try {
-    const res = await fetch(`${API_BASE}/email/${emailId}`);
+    const address = state.activeTab === 'otp' ? state.otp.email : state.gen.email;
+    const res = await fetch(`${API_BASE}/email/${emailId}`, {
+      headers: inboxHeaders(address),
+    });
     const data = await res.json();
+
+    if (handleLockedInbox(res, data, address, () => showEmailDetail(emailId))) return;
 
     if (data.success) {
       const email = data.data;
@@ -276,16 +337,16 @@ async function showEmailDetail(emailId) {
       if (email.bodyHtml) {
         const iframe = document.createElement('iframe');
         iframe.className = 'email-iframe';
-        iframe.sandbox = 'allow-same-origin';
+        // Email HTML is untrusted. Keep its document in an opaque sandbox so
+        // it cannot share this application's origin or access credentials.
+        iframe.sandbox = '';
         iframe.style.width = '100%';
         iframe.style.border = 'none';
         iframe.style.minHeight = '300px';
 
         el.modalBody.appendChild(iframe);
 
-        const doc = iframe.contentDocument || iframe.contentWindow.document;
-        doc.open();
-        doc.write(`
+        iframe.srcdoc = `
           <!DOCTYPE html>
           <html>
           <head>
@@ -306,17 +367,10 @@ async function showEmailDetail(emailId) {
           </head>
           <body>${email.bodyHtml}</body>
           </html>
-        `);
-        doc.close();
-
-        iframe.onload = () => {
-          try {
-            const height = iframe.contentDocument.body.scrollHeight;
-            iframe.style.height = Math.min(height + 20, 500) + 'px';
-          } catch (e) {
-            iframe.style.height = '400px';
-          }
-        };
+        `;
+        // A sandboxed srcdoc has an opaque origin, so its height cannot be
+        // measured safely from the parent application.
+        iframe.style.height = '400px';
       } else if (email.bodyText) {
         const pre = document.createElement('pre');
         pre.className = 'email-text';
@@ -414,9 +468,11 @@ async function generateEmail() {
 
 async function useCustomEmail(localPart, domainId) {
   try {
+    const domain = state.gen.domains.find((item) => item.id === domainId);
+    const address = domain ? `${localPart}@${domain.domain}` : null;
     const res = await fetch(`${API_BASE}/inbox/custom`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: inboxHeaders(address, { 'Content-Type': 'application/json' }),
       body: JSON.stringify({ localPart, domainId }),
     });
     const data = await res.json();
@@ -424,6 +480,8 @@ async function useCustomEmail(localPart, domainId) {
     if (data.success) {
       setGeneratorEmail(data.data.email, data.data.expiresAt);
       showToast('Email kustom berhasil dipasang!', 'success');
+    } else if (handleLockedInbox(res, data, address, () => useCustomEmail(localPart, domainId))) {
+      return;
     } else {
       showToast(data.error || 'Gagal memasang email kustom', 'error');
     }
@@ -433,12 +491,36 @@ async function useCustomEmail(localPart, domainId) {
   }
 }
 
+async function reserveCustomEmail(localPart, domainId, password) {
+  try {
+    const res = await fetch(`${API_BASE}/inbox/reserve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ localPart, domainId, password }),
+    });
+    const data = await res.json();
+    if (!data.success) {
+      showToast(data.error || 'Gagal mereservasi inbox', 'error');
+      return;
+    }
+
+    state.inboxAccessTokens.set(data.data.email.toLowerCase(), data.data.accessToken);
+    setGeneratorEmail(data.data.email, data.data.expiresAt);
+    showToast('Inbox berhasil di-reserve dan dikunci!', 'success');
+  } catch (error) {
+    console.error('Error reserving inbox:', error);
+    showToast('Gagal mereservasi inbox', 'error');
+  }
+}
+
 async function fetchGenInbox() {
   if (!state.gen.email) return;
 
   setGenLoading(true);
   try {
-    const res = await fetch(`${API_BASE}/inbox/${encodeURIComponent(state.gen.email)}`);
+    const res = await fetch(`${API_BASE}/inbox/${encodeURIComponent(state.gen.email)}`, {
+      headers: inboxHeaders(state.gen.email),
+    });
     const data = await res.json();
 
     if (data.success) {
@@ -471,6 +553,10 @@ async function fetchGenInbox() {
       if (state.activeTab === 'generator') {
         updateTitleBadge(emails.length);
       }
+    } else if (handleLockedInbox(res, data, state.gen.email, fetchGenInbox)) {
+      return;
+    } else {
+      showToast(data.error || 'Gagal memuat inbox', 'error');
     }
   } catch (error) {
     console.error('Error loading generator inbox:', error);
@@ -498,6 +584,7 @@ async function deleteGenInbox() {
   try {
     const res = await fetch(`${API_BASE}/inbox/${encodeURIComponent(state.gen.email)}`, {
       method: 'DELETE',
+      headers: inboxHeaders(state.gen.email),
     });
     const data = await res.json();
 
@@ -506,6 +593,8 @@ async function deleteGenInbox() {
       state.gen.email = null;
       localStorage.removeItem('hubify_email');
       generateEmail();
+    } else if (handleLockedInbox(res, data, state.gen.email, deleteGenInbox)) {
+      return;
     } else {
       showToast(data.error || 'Gagal menghapus kotak masuk', 'error');
     }
@@ -801,10 +890,13 @@ async function fetchOtpInbox(showLoad = true) {
   }
 
   try {
-    const res = await fetch(`${API_BASE}/inbox/${encodeURIComponent(state.otp.email)}`);
+    const res = await fetch(`${API_BASE}/inbox/${encodeURIComponent(state.otp.email)}`, {
+      headers: inboxHeaders(state.otp.email),
+    });
     const data = await res.json();
     
     if (!data.success) {
+      if (handleLockedInbox(res, data, state.otp.email, () => fetchOtpInbox(showLoad))) return;
       el.otpResultEmpty.classList.remove('hidden');
       el.otpResultEmpty.querySelector('p').textContent = data.error || 'Gagal memuat data.';
       return;
@@ -907,6 +999,32 @@ function bindEvents() {
     if (e.key === 'Escape') hideEmailModal();
   });
 
+  if (el.unlockClose) {
+    el.unlockClose.addEventListener('click', closeUnlockModal);
+  }
+  if (el.unlockModal) {
+    el.unlockModal.addEventListener('click', (e) => {
+      if (e.target === el.unlockModal) closeUnlockModal();
+    });
+  }
+  if (el.unlockForm) {
+    el.unlockForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const address = state.unlock.address;
+      const password = el.unlockPassword?.value || '';
+      if (!address || !password) return;
+      try {
+        await unlockInbox(address, password);
+        const onSuccess = state.unlock.onSuccess;
+        closeUnlockModal();
+        showToast('Inbox berhasil dibuka', 'success');
+        onSuccess?.();
+      } catch (error) {
+        showToast(error.message || 'Password salah', 'error');
+      }
+    });
+  }
+
   // Generator Action Bindings
   if (el.genBtnCopy) {
     el.genBtnCopy.addEventListener('click', () => {
@@ -966,11 +1084,30 @@ function bindEvents() {
       e.preventDefault();
       const localPart = el.genCustomLocal.value.trim();
       const domainId = el.genCustomDomain.value;
+      const isProtected = el.genCustomProtect?.checked;
+      const password = el.genCustomPassword?.value || '';
 
       if (localPart && domainId) {
-        useCustomEmail(localPart, parseInt(domainId));
+        if (isProtected) {
+          if (password.length < 10) {
+            showToast('Password inbox minimal 10 karakter', 'error');
+            return;
+          }
+          reserveCustomEmail(localPart, parseInt(domainId), password);
+          el.genCustomPassword.value = '';
+        } else {
+          useCustomEmail(localPart, parseInt(domainId));
+        }
         el.genCustomLocal.value = '';
       }
+    });
+  }
+
+  if (el.genCustomProtect && el.genCustomPassword) {
+    el.genCustomProtect.addEventListener('change', () => {
+      el.genCustomPassword.classList.toggle('hidden', !el.genCustomProtect.checked);
+      el.genCustomPassword.required = el.genCustomProtect.checked;
+      if (!el.genCustomProtect.checked) el.genCustomPassword.value = '';
     });
   }
 
@@ -1050,6 +1187,17 @@ function bindEvents() {
 }
 
 // ── App Initialization ────────────────────────────────────────────────────────
+function getDirectInboxAddress() {
+  const path = window.location.pathname.replace(/^\/+|\/+$/g, '');
+  if (!path || path.includes('/')) return null;
+  try {
+    const address = decodeURIComponent(path).trim().toLowerCase();
+    return /^[a-z0-9._-]+@[a-z0-9.-]+\.[a-z]{2,}$/i.test(address) ? address : null;
+  } catch {
+    return null;
+  }
+}
+
 async function init() {
   initTheme();
   bindEvents();
@@ -1070,8 +1218,18 @@ async function init() {
   // 1. Generator - fetch domains, check last saved
   await fetchDomains();
   
+  const directInbox = getDirectInboxAddress();
   const savedEmail = localStorage.getItem('hubify_email');
-  if (savedEmail) {
+  if (directInbox) {
+    const [, domain] = directInbox.split('@');
+    const domainExists = state.gen.domains.some((item) => item.domain === domain);
+    if (domainExists) {
+      setGeneratorEmail(directInbox, null);
+    } else {
+      showToast('Domain pada link ini belum terhubung atau belum aktif', 'error');
+      generateEmail();
+    }
+  } else if (savedEmail) {
     const [, domain] = savedEmail.split('@');
     const domainExists = state.gen.domains.some((d) => d.domain === domain);
     if (domainExists) {

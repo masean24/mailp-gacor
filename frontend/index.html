@@ -134,8 +134,14 @@
           <input type="text" class="input" id="gen-custom-local" placeholder="username" pattern="[a-zA-Z0-9._-]+">
           <span class="custom-email__at">@</span>
           <select class="select" id="gen-custom-domain"></select>
+          <label class="protected-option" title="Inbox ini hanya dapat dibuka dengan password">
+            <input type="checkbox" id="gen-custom-protect">
+            <span>Proteksi password</span>
+          </label>
+          <input type="password" class="input hidden" id="gen-custom-password" placeholder="Password minimal 10 karakter" minlength="10" autocomplete="new-password">
           <button type="submit" class="btn btn--primary">Gunakan</button>
         </form>
+        <p style="margin-top:0.75rem;font-size:0.8rem;color:var(--text-secondary);">Protected inbox publik mengikuti masa berlaku server (default 7 hari). Password hanya dapat diganti oleh admin.</p>
       </section>
 
       <!-- Generator Inbox Section -->
@@ -293,6 +299,23 @@
       </div>
       <div class="modal__body">
         <div id="modal-body"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Password prompt for a protected inbox. Tokens are kept only in memory. -->
+  <div class="modal" id="inbox-unlock-modal" aria-hidden="true">
+    <div class="modal__content modal__content--compact">
+      <div class="modal__header">
+        <h3 class="modal__title">Inbox Terkunci</h3>
+        <button class="modal__close" id="inbox-unlock-close" title="Tutup">×</button>
+      </div>
+      <div class="modal__body">
+        <p class="unlock-modal__text">Masukkan password untuk membuka <strong id="inbox-unlock-address"></strong>.</p>
+        <form id="inbox-unlock-form" class="unlock-modal__form">
+          <input type="password" class="input" id="inbox-unlock-password" placeholder="Password inbox" autocomplete="current-password" required>
+          <button type="submit" class="btn btn--primary">Buka Inbox</button>
+        </form>
       </div>
     </div>
   </div>
